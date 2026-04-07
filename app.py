@@ -191,12 +191,12 @@ if watchlist_data:
 
 st.divider()
 
-# 4. 섹션: 종목 계산기 (새로 추가된 기능)
+# 4. 섹션: 종목 계산기
 st.subheader("🧮 종목 계산기 (수익/손실 가이드)")
 calc_col1, calc_col2 = st.columns([1, 2])
 
 with calc_col1:
-    st.write("📌 **투자 정보 입력**")
+    st.write("📌 **투자 정보 및 비율 설정**")
     calc_name = st.text_input("계산할 종목명 또는 티커", placeholder="예: 삼성전자 또는 AAPL")
     
     current_price = 0.0
@@ -209,34 +209,42 @@ with calc_col1:
     buy_price = st.number_input("구매 가격 (1주당)", value=float(current_price) if current_price > 0 else 0.0, step=100.0)
     quantity = st.number_input("보유 수량", value=0, step=1)
     
+    st.divider()
+    # 사용자 정의 비율 입력 필드 추가
+    st.write("⚙️ **목표 비율 설정 (%)**")
+    p_col1, p_col2, p_col3 = st.columns(3)
+    stop_loss_pct = p_col1.number_input("손절가 (%)", value=10.0, step=1.0)
+    target1_pct = p_col2.number_input("익절가 1 (%)", value=10.0, step=1.0)
+    target_final_pct = p_col3.number_input("최종 익절가 (%)", value=20.0, step=1.0)
+    
     total_investment = buy_price * quantity
     st.write(f"💰 **총 투자 금액: {total_investment:,.2f}**")
 
 with calc_col2:
-    st.write("📊 **목표가 및 손절가 가이드**")
+    st.write("📊 **맞춤형 목표가 및 손절가 가이드**")
     if total_investment > 0:
-        # 가이드 금액 계산
-        stop_loss = buy_price * 0.9  # -10%
-        target_1 = buy_price * 1.1   # +10%
-        target_final = buy_price * 1.2 # +20%
+        # 가이드 금액 계산 (입력받은 비율 적용)
+        stop_loss = buy_price * (1 - (stop_loss_pct / 100))
+        target_1 = buy_price * (1 + (target1_pct / 100))
+        target_final = buy_price * (1 + (target_final_pct / 100))
         
         # UI 레이아웃
         guide_col1, guide_col2, guide_col3 = st.columns(3)
         
         with guide_col1:
-            st.error("📉 **손절가 (-10%)**")
+            st.error(f"📉 **손절가 (-{stop_loss_pct}%)**")
             st.subheader(f"{stop_loss:,.2f}")
-            st.caption(f"예상 손실액: -{(total_investment * 0.1):,.2f}")
+            st.caption(f"예상 손실액: -{(total_investment * (stop_loss_pct/100)):,.2f}")
 
         with guide_col2:
-            st.success("📈 **익절가 1 (+10%)**")
+            st.success(f"📈 **익절가 1 (+{target1_pct}%)**")
             st.subheader(f"{target_1:,.2f}")
-            st.caption(f"예상 수익액: +{(total_investment * 0.1):,.2f}")
+            st.caption(f"예상 수익액: +{(total_investment * (target1_pct/100)):,.2f}")
 
         with guide_col3:
-            st.info("🚀 **최종 익절가 (+20%)**")
+            st.info(f"🚀 **최종 익절가 (+{target_final_pct}%)**")
             st.subheader(f"{target_final:,.2f}")
-            st.caption(f"예상 수익액: +{(total_investment * 0.2):,.2f}")
+            st.caption(f"예상 수익액: +{(total_investment * (target_final_pct/100)):,.2f}")
             
         st.divider()
         # 현재가 대비 현황 파악 (종목명이 있을 때만)
@@ -258,7 +266,7 @@ if st.sidebar.button("새로고침"):
 st.sidebar.divider()
 st.sidebar.info("""
 **계산기 활용 팁:**
-- 종목명을 입력하면 실시간 현재가를 참고할 수 있습니다.
-- '구매 가격'을 직접 수정하여 시나리오별 수익/손실을 계산해보세요.
-- 손절가 및 익절가는 투자 원금(평단가) 기준으로 계산됩니다.
+- 손절가 및 익절가 비율을 직접 입력하여 나만의 투자 가이드를 만드세요.
+- 원금 기준으로 각 목표가에 도달했을 때의 예상 수익/손실액이 표시됩니다.
+- 현재 시세가 있는 경우, 실시간 수익 현황도 함께 분석해 드립니다.
 """)
