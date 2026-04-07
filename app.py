@@ -137,32 +137,54 @@ with col_right:
 
 st.divider()
 
-# 2. 중간: 3분할 (환율, 유가, 원자재)
+# 2. 중간: 경제 지표 분석 (환율, 유가, 금, 은)
 st.subheader("🌐 주요 경제 지표 분석")
-col_bot1, col_bot2, col_bot3 = st.columns(3)
+
+# 경제 지표용 기간 선택
+eco_period_label = st.radio("지표 조회 기간", ["1일", "1개월", "1년"], index=1, horizontal=True, key="eco_period_btn")
+selected_eco_period = period_map[eco_period_label]
+
+col_bot1, col_bot2, col_bot3, col_bot4 = st.columns(4)
 
 with col_bot1:
     st.write("💱 **환율 (USD/KRW)**")
     fx_price, fx_chg, fx_pct = get_finance_data("KRW=X")
     st.metric("원/달러 환율", f"{fx_price:,.2f}원", f"{fx_chg:+.2f}")
     if fx_price <= 1500:
-        st.success("✅ 정상 (1,500원 이하 유지 중)")
+        st.success("✅ 정상 (1500원 이하)")
     else:
-        st.error("⚠️ 주의 (1,500원 초과 상태)")
+        st.error("⚠️ 주의 (1500원 초과)")
+    fx_chart = get_chart_data("KRW=X", "USD/KRW", period=selected_eco_period)
+    if not fx_chart.empty:
+        st.line_chart(fx_chart, height=150)
 
 with col_bot2:
-    st.write("🛢️ **에너지 (WTI Crude Oil)**")
+    st.write("🛢️ **에너지 (WTI Oil)**")
     oil_price, oil_chg, oil_pct = get_finance_data("CL=F")
     st.metric("WTI 유가", f"${oil_price:,.2f}", f"{oil_pct:+.2f}%")
     if oil_price <= 100:
-        st.success("✅ 정상 ($100 이하 유지 중)")
+        st.success("✅ 정상 ($100 이하)")
     else:
-        st.error("⚠️ 주의 ($100 초과 상태)")
+        st.error("⚠️ 주의 ($100 초과)")
+    oil_chart = get_chart_data("CL=F", "WTI", period=selected_eco_period)
+    if not oil_chart.empty:
+        st.line_chart(oil_chart, height=150)
 
 with col_bot3:
-    st.write("🔋 **원자재 (Lithium)**")
-    lit_price, lit_chg, lit_pct = get_finance_data("LIT")
-    st.metric("Global Lithium (LIT)", f"${lit_price:,.2f}", f"{lit_pct:+.2f}%")
+    st.write("🟡 **금 (Gold)**")
+    gold_price, gold_chg, gold_pct = get_finance_data("GC=F")
+    st.metric("금 선물", f"${gold_price:,.2f}", f"{gold_pct:+.2f}%")
+    gold_chart = get_chart_data("GC=F", "Gold", period=selected_eco_period)
+    if not gold_chart.empty:
+        st.line_chart(gold_chart, height=150, color="#FFD700")
+
+with col_bot4:
+    st.write("⚪ **은 (Silver)**")
+    silver_price, silver_chg, silver_pct = get_finance_data("SI=F")
+    st.metric("은 선물", f"${silver_price:,.2f}", f"{silver_pct:+.2f}%")
+    silver_chart = get_chart_data("SI=F", "Silver", period=selected_eco_period)
+    if not silver_chart.empty:
+        st.line_chart(silver_chart, height=150, color="#C0C0C0")
 
 st.divider()
 
@@ -209,7 +231,6 @@ if st.sidebar.button("새로고침"):
 st.sidebar.divider()
 st.sidebar.info("""
 **차트 안내:**
-- 상단 차트와 관심 종목 차트 위에 있는 버튼으로 조회 기간을 변경할 수 있습니다.
-- 1일 선택 시 15분 단위의 흐름이 표시됩니다.
-- 1개월/1년 선택 시 일 단위 종가 흐름이 표시됩니다.
+- 상단 차트와 경제 지표, 관심 종목 차트의 기간을 각각 독립적으로 설정할 수 있습니다.
+- 1일 선택 시 세부 흐름이 표시되며, 1개월/1년 선택 시 일 단위 종가 흐름이 표시됩니다.
 """)
