@@ -50,14 +50,24 @@ def get_finance_data(ticker):
         return 0.0, 0.0, 0.0
 
 @st.cache_data(ttl=300)
-def get_chart_data(ticker, name):
+def get_chart_data(ticker, name, period="1mo"):
+    """
+    period 옵션: '1d', '1mo', '1y' 등
+    """
     try:
         yt = yf.Ticker(ticker)
-        data = yt.history(period="1mo")
+        # 사용자가 선택한 기간에 따라 데이터를 가져옴
+        interval = "15m" if period == "1d" else "1d"
+        data = yt.history(period=period, interval=interval)
+        
         if not data.empty:
             df = data[['Close']].copy()
             df.columns = [name]
-            df.index = df.index.strftime('%Y-%m-%d')
+            # 1일 데이터일 경우 시간까지 표시, 그 외는 날짜만 표시
+            if period == "1d":
+                df.index = df.index.strftime('%H:%M')
+            else:
+                df.index = df.index.strftime('%Y-%m-%d')
             return df
         return pd.DataFrame()
     except Exception:
@@ -76,6 +86,12 @@ col_left, col_right = st.columns(2)
 
 with col_left:
     st.subheader("🇰🇷 국내 증시 흐름 비교")
+    
+    # 기간 선택 버튼 추가
+    k_period = st.radio("기간 선택 (국내)", ["1일", "1개월", "1년"], index=1, horizontal=True, key="k_period_btn")
+    period_map = {"1일": "1d", "1개월": "1mo", "1년": "1y"}
+    selected_k_period = period_map[k_period]
+
     k_col1, k_col2 = st.columns(2)
     
     # 지수 데이터 가져오기
@@ -86,18 +102,21 @@ with col_left:
     k_col2.metric("KOSDAQ", f"{kd_price:,.2f}", f"{kd_pct:+.2f}%")
     
     # 국내 증시 통합 차트 생성
-    kp_df = get_chart_data("^KS11", "KOSPI")
-    kd_df = get_chart_data("^KQ11", "KOSDAQ")
+    kp_df = get_chart_data("^KS11", "KOSPI", period=selected_k_period)
+    kd_df = get_chart_data("^KQ11", "KOSDAQ", period=selected_k_period)
     
     if not kp_df.empty and not kd_df.empty:
-        # 두 데이터를 합쳐서 하나의 차트로 표시
         k_combined = pd.concat([kp_df, kd_df], axis=1)
-        # 컬럼 순서를 고정하고 리스트 형태로 색상 전달 (KOSPI=파랑, KOSDAQ=빨강)
         k_combined = k_combined[["KOSPI", "KOSDAQ"]]
         st.line_chart(k_combined, color=["#0000FF", "#FF0000"])
 
 with col_right:
     st.subheader("🇺🇸 미국 증시 흐름 비교")
+    
+    # 기간 선택 버튼 추가
+    u_period = st.radio("기간 선택 (미국)", ["1일", "1개월", "1년"], index=1, horizontal=True, key="u_period_btn")
+    selected_u_period = period_map[u_period]
+
     u_col1, u_col2 = st.columns(2)
     
     # 지수 데이터 가져오기
@@ -108,13 +127,11 @@ with col_right:
     u_col2.metric("NASDAQ", f"{nas_price:,.2f}", f"{nas_pct:+.2f}%")
     
     # 미국 증시 통합 차트 생성
-    sp_df = get_chart_data("^GSPC", "S&P 500")
-    nas_df = get_chart_data("^IXIC", "NASDAQ")
+    sp_df = get_chart_data("^GSPC", "S&P 500", period=selected_u_period)
+    nas_df = get_chart_data("^IXIC", "NASDAQ", period=selected_u_period)
     
     if not sp_df.empty and not nas_df.empty:
-        # 두 데이터를 합쳐서 하나의 차트로 표시
         u_combined = pd.concat([sp_df, nas_df], axis=1)
-        # 컬럼 순서를 고정하고 리스트 형태로 색상 전달 (NASDAQ=파랑, S&P 500=빨강)
         u_combined = u_combined[["NASDAQ", "S&P 500"]]
         st.line_chart(u_combined, color=["#0000FF", "#FF0000"])
 
@@ -153,6 +170,10 @@ st.divider()
 st.subheader("⭐ 관심 종목 분석")
 st.info("조회하고 싶은 **회사명** 또는 **티커**를 입력하세요. (예: 삼성전자, 테슬라, 애플)")
 
+# 개별 종목 기간 선택
+item_period_label = st.select_slider("종목 차트 기간 설정", options=["1일", "1개월", "1년"], value="1개월")
+selected_item_period = period_map[item_period_label]
+
 input_cols = st.columns(5)
 watchlist_data = []
 
@@ -169,8 +190,8 @@ if watchlist_data:
             price, chg, pct = get_finance_data(item["ticker"])
             if price != 0:
                 st.metric(f"{item['name']} ({item['ticker']})", f"{price:,.2f}", f"{pct:+.2f}%")
-                # 종목별 단독 차트
-                chart_data = get_chart_data(item["ticker"], item["name"])
+                # 종목별 단독 차트 (선택된 기간 반영)
+                chart_data = get_chart_data(item["ticker"], item["name"], period=selected_item_period)
                 if not chart_data.empty:
                     st.line_chart(chart_data, height=150)
                 else:
@@ -187,8 +208,8 @@ if st.sidebar.button("새로고침"):
 
 st.sidebar.divider()
 st.sidebar.info("""
-**배포 및 관리 안내:**
-- 이 웹 사이트는 GitHub와 Streamlit Cloud를 통해 호스팅됩니다.
-- 코드 수정 후 GitHub에 Push하면 자동으로 웹에 반영됩니다.
-- 문의: [개발자 이메일 또는 관련 정보]
+**차트 안내:**
+- 상단 차트와 관심 종목 차트 위에 있는 버튼으로 조회 기간을 변경할 수 있습니다.
+- 1일 선택 시 15분 단위의 흐름이 표시됩니다.
+- 1개월/1년 선택 시 일 단위 종가 흐름이 표시됩니다.
 """)
