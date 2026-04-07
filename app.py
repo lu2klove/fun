@@ -237,7 +237,7 @@ with calc_col2:
             st.caption(f"예상 손실액: -{(total_investment * (stop_loss_pct/100)):,.2f}")
 
         with guide_col2:
-            st.success(f"📈 **익절가 1 (+{target1_pct}%)**")
+            st.success(f"📈 **익절가 1차 (+{target1_pct}%)**")
             st.subheader(f"{target_1:,.2f}")
             st.caption(f"예상 수익액: +{(total_investment * (target1_pct/100)):,.2f}")
 
