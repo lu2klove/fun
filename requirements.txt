@@ -3,3 +3,4 @@ yfinance
 pandas
 google-cloud-firestore
 google-auth
+plotly
