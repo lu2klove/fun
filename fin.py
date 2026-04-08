@@ -30,29 +30,45 @@ COLLECTION_NAME = "my_portfolio"
 
 # --- 3. DB 핸들링 함수 ---
 def get_portfolio_from_db():
-    if db is None: return []
+    if db is None:
+        return []
     try:
-        docs = db.collection(COLLECTION_NAME).order_by("created_at").stream()
-        return [{"id": d.id, **d.to_dict()} for d in docs]
-    except Exception:
+        # created_at 정렬이 인덱스 문제로 실패할 수 있으므로, 실패 시 정렬 없이 가져오도록 보완
+        try:
+            docs = db.collection(COLLECTION_NAME).order_by("created_at", direction=firestore.Query.DESCENDING).stream()
+            return [{"id": d.id, **d.to_dict()} for d in docs]
+        except Exception:
+            # 정렬 쿼리 실패 시 기본 스트림으로 시도
+            docs = db.collection(COLLECTION_NAME).stream()
+            return [{"id": d.id, **d.to_dict()} for d in docs]
+    except Exception as e:
+        st.error(f"데이터를 불러오는 중 오류 발생: {e}")
         return []
 
 def add_to_portfolio(name, ticker, buy_price, quantity):
     if db:
-        db.collection(COLLECTION_NAME).add({
-            "name": name, 
-            "ticker": ticker, 
-            "buy_price": buy_price,
-            "quantity": quantity, 
-            "created_at": datetime.now()
-        })
-        return True
+        try:
+            db.collection(COLLECTION_NAME).add({
+                "name": name, 
+                "ticker": ticker, 
+                "buy_price": float(buy_price), 
+                "quantity": int(quantity), 
+                "created_at": datetime.now()
+            })
+            return True
+        except Exception as e:
+            st.error(f"등록 실패: {e}")
+            return False
     return False
 
 def delete_from_portfolio(doc_id):
     if db:
-        db.collection(COLLECTION_NAME).document(doc_id).delete()
-        return True
+        try:
+            db.collection(COLLECTION_NAME).document(doc_id).delete()
+            return True
+        except Exception as e:
+            st.error(f"삭제 실패: {e}")
+            return False
     return False
 
 # --- 4. 데이터 수집 함수 ---
@@ -136,57 +152,73 @@ with st.expander("➕ 새 종목 등록하기", expanded=False):
     in_name = c1.text_input("종목명 (또는 티커)")
     in_buy = c2.number_input("평단가", min_value=0.0, step=100.0)
     in_qty = c3.number_input("수량", min_value=0, step=1)
-    # 버튼 클릭 시 즉시 로직 실행 후 rerun 호출
+    
     if c4.button("등록"):
-        if in_name and in_buy > 0:
-            if add_to_portfolio(in_name, get_ticker_from_name(in_name), in_buy, in_qty):
+        if in_name and in_buy > 0 and in_qty > 0:
+            success = add_to_portfolio(in_name, get_ticker_from_name(in_name), in_buy, in_qty)
+            if success:
                 st.success(f"{in_name} 등록 완료!")
                 st.rerun()
+        else:
+            st.warning("종목명, 평단가, 수량을 정확히 입력해주세요.")
 
+# DB에서 목록 새로고침
 portfolio = get_portfolio_from_db()
+
 if portfolio:
     data_list = []
     total_cost, total_eval = 0, 0
     
-    for item in portfolio:
-        curr, _, _ = get_finance_data(item['ticker'])
-        cost = item['buy_price'] * item['quantity']
-        eval_v = curr * item['quantity']
-        total_cost += cost
-        total_eval += eval_v
-        
-        gain = eval_v - cost
-        gain_pct = (gain / cost * 100) if cost > 0 else 0
-        
-        data_list.append({
-            "종목": item['name'],
-            "티커": item['ticker'],
-            "수량": item['quantity'],
-            "평단가": f"{item['buy_price']:,.0f}",
-            "현재가": f"{curr:,.0f}",
-            "수익금": f"{gain:,.0f}",
-            "수익률": f"{gain_pct:+.2f}%",
-            "ID": item['id']
-        })
+    with st.spinner('실시간 시세를 불러오는 중...'):
+        for item in portfolio:
+            # 티커가 없거나 잘못된 경우 대비
+            ticker = item.get('ticker', '')
+            if not ticker: continue
+            
+            curr, _, _ = get_finance_data(ticker)
+            buy_price = float(item.get('buy_price', 0))
+            quantity = int(item.get('quantity', 0))
+            
+            cost = buy_price * quantity
+            eval_v = curr * quantity
+            total_cost += cost
+            total_eval += eval_v
+            
+            gain = eval_v - cost
+            gain_pct = (gain / cost * 100) if cost > 0 else 0
+            
+            data_list.append({
+                "종목": item.get('name', 'N/A'),
+                "티커": ticker,
+                "수량": quantity,
+                "평단가": f"{buy_price:,.0f}",
+                "현재가": f"{curr:,.0f}",
+                "수익금": f"{gain:,.0f}",
+                "수익률": f"{gain_pct:+.2f}%",
+                "ID": item['id']
+            })
 
-    # 전체 요약 지표
-    s1, s2, s3 = st.columns(3)
-    s1.metric("총 매수금액", f"{total_cost:,.0f}원")
-    s2.metric("총 평가금액", f"{total_eval:,.0f}원")
-    total_gain_pct = (total_eval / total_cost - 1) * 100 if total_cost > 0 else 0
-    s3.metric("총 손익", f"{total_eval-total_cost:,.0f}원", f"{total_gain_pct:+.2f}%")
+    if data_list:
+        # 전체 요약 지표
+        s1, s2, s3 = st.columns(3)
+        s1.metric("총 매수금액", f"{total_cost:,.0f}원")
+        s2.metric("총 평가금액", f"{total_eval:,.0f}원")
+        total_gain_pct = (total_eval / total_cost - 1) * 100 if total_cost > 0 else 0
+        s3.metric("총 손익", f"{total_eval-total_cost:,.0f}원", f"{total_gain_pct:+.2f}%")
 
-    # 포트폴리오 테이블
-    df_p = pd.DataFrame(data_list)
-    st.dataframe(df_p.drop(columns="ID"), use_container_width=True)
+        # 포트폴리오 테이블
+        df_p = pd.DataFrame(data_list)
+        st.dataframe(df_p.drop(columns="ID"), use_container_width=True)
 
-    # 삭제 기능
-    del_col1, del_col2 = st.columns([3, 1])
-    target = del_col1.selectbox("삭제할 종목 선택", df_p['종목'].tolist())
-    if del_col2.button("선택 삭제"):
-        doc_id = df_p[df_p['종목'] == target]['ID'].values[0]
-        if delete_from_portfolio(doc_id):
-            st.rerun()
+        # 삭제 기능
+        del_col1, del_col2 = st.columns([3, 1])
+        target_name = del_col1.selectbox("삭제할 종목 선택", df_p['종목'].tolist())
+        if del_col2.button("선택 삭제"):
+            doc_id = df_p[df_p['종목'] == target_name]['ID'].values[0]
+            if delete_from_portfolio(doc_id):
+                st.rerun()
+    else:
+        st.info("데이터를 불러올 수 없습니다.")
 else:
     st.info("등록된 종목이 없습니다. 위 '새 종목 등록하기'를 이용해 보세요.")
 
@@ -198,20 +230,20 @@ calc_col1, calc_col2 = st.columns([1, 2])
 
 with calc_col1:
     st.write("📌 **계산기 입력**")
-    calc_name = st.text_input("분석할 종목명", placeholder="예: 삼성전자")
+    calc_name = st.text_input("분석할 종목명", placeholder="예: 삼성전자", key="calc_name_input")
     c_price = 0.0
     if calc_name:
         c_ticker = get_ticker_from_name(calc_name)
         c_price, _, _ = get_finance_data(c_ticker)
         st.info(f"현재 시세: {c_price:,.2f}")
 
-    b_price = st.number_input("구매 가격", value=float(c_price) if c_price > 0 else 0.0)
-    qty = st.number_input("보유 수량 ", value=0)
+    b_price = st.number_input("구매 가격", value=float(c_price) if c_price > 0 else 0.0, key="calc_buy_price")
+    qty = st.number_input("보유 수량 ", value=0, key="calc_qty")
     
     # 목표 비율
     p_c1, p_c2 = st.columns(2)
-    sl_pct = p_c1.number_input("손절 (%)", value=10.0)
-    tp_pct = p_c2.number_input("익절 (%)", value=20.0)
+    sl_pct = p_c1.number_input("손절 (%)", value=10.0, key="calc_sl_pct")
+    tp_pct = p_c2.number_input("익절 (%)", value=20.0, key="calc_tp_pct")
 
 with calc_col2:
     if b_price > 0 and qty > 0:
@@ -228,16 +260,18 @@ with calc_col2:
         if calc_name:
             st.write("---")
             st.write(f"🔍 **{calc_name} 주요 지표**")
-            stock_info = yf.Ticker(get_ticker_from_name(calc_name)).info
-            f1, f2, f3 = st.columns(3)
-            f1.metric("PER", f"{stock_info.get('trailingPE', 'N/A')}")
-            f2.metric("PBR", f"{stock_info.get('priceToBook', 'N/A')}")
-            f3.metric("배당수익률", f"{stock_info.get('dividendYield', 0)*100:.2f}%" if stock_info.get('dividendYield') else "0%")
+            try:
+                stock_info = yf.Ticker(get_ticker_from_name(calc_name)).info
+                f1, f2, f3 = st.columns(3)
+                f1.metric("PER", f"{stock_info.get('trailingPE', 'N/A')}")
+                f2.metric("PBR", f"{stock_info.get('priceToBook', 'N/A')}")
+                f3.metric("배당수익률", f"{stock_info.get('dividendYield', 0)*100:.2f}%" if stock_info.get('dividendYield') else "0%")
+            except:
+                st.write("상세 지표를 가져올 수 없습니다.")
     else:
         st.info("종목명과 투자 정보를 입력하면 가이드와 상세 지표가 표시됩니다.")
 
 # 사이드바
-# on_click 콜백 대신 버튼 클릭을 직접 확인하여 rerun 호출
 if st.sidebar.button("새로고침"):
     st.rerun()
 st.sidebar.info("Firestore DB에 안전하게 저장됩니다.")
