@@ -126,7 +126,6 @@ def get_finance_data(ticker):
 def get_chart_data(ticker, name, period="1mo"):
     try:
         yt = yf.Ticker(ticker)
-        # 1d 기간일 때는 정밀한 분봉 데이터(1m 또는 5m)를 가져오기 위해 interval 설정 가능
         interval = "5m" if period == "1d" else "1d"
         data = yt.history(period=period, interval=interval)
         if not data.empty:
@@ -143,11 +142,11 @@ def get_info_data(ticker):
         yt = yf.Ticker(ticker)
         info = yt.info
         if not info or len(info) < 5: return None
-        return info # 전체 정보 반환하여 최대한 활용
+        return info 
     except:
         return None
 
-# --- 5. 티커 변환 로직 ---
+# --- 5. 티커 변환 및 검증 로직 ---
 COMPANY_TICKER_MAP = {
     "삼성전자": "005930.KS", "SK하이닉스": "000660.KS", "네이버": "035420.KS",
     "카카오": "035720.KS", "현대차": "005380.KS", "애플": "AAPL", "테슬라": "TSLA",
@@ -163,7 +162,34 @@ def search_ticker(query):
     except: pass
     return None
 
+def validate_and_get_ticker(name):
+    """종목명을 티커로 변환하고 유효성을 검증합니다."""
+    clean = name.strip()
+    # 1. 수동 맵핑 확인
+    if clean in COMPANY_TICKER_MAP:
+        return COMPANY_TICKER_MAP[clean]
+    
+    # 2. 티커 형태인 경우(영문 대문자+숫자/점) 직접 확인
+    if clean.replace(".","").isalnum() and clean.upper() == clean:
+        ticker = clean
+    else:
+        # 3. 야후 파이낸스 검색
+        ticker = search_ticker(clean)
+    
+    if ticker:
+        # 4. 실제 데이터가 존재하는지 최종 확인
+        try:
+            yt = yf.Ticker(ticker)
+            hist = yt.history(period="1d")
+            if not hist.empty:
+                return ticker
+        except:
+            pass
+            
+    return None
+
 def get_ticker_from_name(name):
+    # 등록 시에는 validate_and_get_ticker를 사용하므로, 이 함수는 레거시 지원용으로 유지
     clean = name.strip()
     if clean in COMPANY_TICKER_MAP: return COMPANY_TICKER_MAP[clean]
     if clean.replace(".","").isalnum() and clean.upper() == clean: return clean
@@ -172,7 +198,7 @@ def get_ticker_from_name(name):
 
 # --- 6. UI 구성 ---
 st.title("📊 글로벌 경제 통합 대시보드")
-st.caption(f"버전: 2026-04-08 V1.3 | DB: richfin | {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+st.caption(f"버전: 2026-04-08 V1.4 | DB: richfin | {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
 if db is None:
     st.error("❌ Firestore 연결에 실패했습니다.")
@@ -204,7 +230,7 @@ else:
         
         with st.expander("➕ 새 종목 등록"):
             c1, c2, c3 = st.columns(3)
-            in_name = c1.text_input("종목명", key="reg_name")
+            in_name = c1.text_input("종목명 (예: 삼성전자, NVDA)", key="reg_name")
             in_buy = c2.number_input("평단가", min_value=0.0)
             in_qty = c3.number_input("수량", min_value=0)
             cc1, cc2, cc3 = st.columns(3)
@@ -213,12 +239,23 @@ else:
             in_tp_f = cc3.number_input("최종 익절 (%)", value=50.0)
             in_date = st.date_input("매수일자", value=datetime.now())
             in_log = st.text_area("매매일지")
+            
             if st.button("포트폴리오 추가", use_container_width=True):
-                if in_name and in_buy > 0:
-                    ticker = get_ticker_from_name(in_name)
-                    if add_to_portfolio(in_name, ticker, in_buy, in_qty, in_sl, in_tp1, in_tp_f, in_date, in_log):
-                        st.success(f"{in_name} 등록 완료!")
-                        st.rerun()
+                if not in_name:
+                    st.warning("종목명을 입력해주세요.")
+                elif in_buy <= 0:
+                    st.warning("유효한 평단가를 입력해주세요.")
+                else:
+                    # 종목 검증 및 티커 추출
+                    with st.spinner(f"'{in_name}' 종목 정보를 확인 중..."):
+                        valid_ticker = validate_and_get_ticker(in_name)
+                    
+                    if valid_ticker:
+                        if add_to_portfolio(in_name, valid_ticker, in_buy, in_qty, in_sl, in_tp1, in_tp_f, in_date, in_log):
+                            st.success(f"✅ {in_name} ({valid_ticker}) 등록 완료!")
+                            st.rerun()
+                    else:
+                        st.error(f"❌ '{in_name}'에 해당하는 유효한 주식 티커를 찾을 수 없습니다. 정확한 종목명이나 티커(예: AAPL)를 입력해주세요.")
 
         portfolio = get_portfolio_from_db()
         if portfolio:
@@ -324,12 +361,10 @@ else:
         analysis_name = st.selectbox("분석 종목 선택", analysis_options)
         analysis_ticker = get_ticker_from_name(analysis_name)
         
-        # 차트 기간 선택 (년/월/일)
         chart_period = st.segmented_control("분석 차트 기간", ["1d", "1mo", "1y"], default="1mo")
         
         st.write(f"📌 **티커:** `{analysis_ticker}`")
         
-        # 데이터 시각화
         chart_df = get_chart_data(analysis_ticker, analysis_name, chart_period)
         if not chart_df.empty: 
             st.line_chart(chart_df)
@@ -338,14 +373,12 @@ else:
         st.write("🏛️ **상세 펀더멘털 및 가치 지표**")
         info = get_info_data(analysis_ticker)
         if info:
-            # 주요 요약 지표 (4열)
             m1, m2, m3, m4 = st.columns(4)
             m1.metric("현재가", f"{info.get('currentPrice', 0):,.2f}")
             m2.metric("PER(Fwd)", f"{info.get('forwardPE', 0):.2f}")
             m3.metric("PBR", f"{info.get('priceToBook', 0):.2f}")
             m4.metric("배당수익률", f"{info.get('dividendYield', 0)*100:.2f}%" if info.get('dividendYield') else "-")
             
-            # 가치 지표 확장 테이블
             with st.expander("📝 전체 지표 리스트 (상세)", expanded=True):
                 fund_data = {
                     "항목": [
