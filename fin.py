@@ -122,21 +122,40 @@ def get_chart_data(ticker, period="1개월"):
     except: return pd.DataFrame()
 
 def validate_and_get_ticker(name):
-    """종목명/코드를 검증하고 유효한 티커 반환"""
+    """종목명/코드를 검증하고 유효한 티커 반환 (강화된 로직)"""
     query = name.strip()
     if not query: return None
+    
+    # 1. 이미 6자리 숫자인 경우 그대로 반환
+    if re.match(r'^\d{6}$', query): return query
+    
+    # 2. 네이버 금융 자동완성 API 시도
     try:
         search_url = f"https://ac.finance.naver.com/ac?q={query}&st=111&r_format=json&t_koreng=1"
         res = requests.get(search_url, timeout=5).json()
         if res.get('items') and len(res['items'][0]) > 0:
             return res['items'][0][0][1]
     except: pass
+    
+    # 3. 네이버 통합 검색 결과에서 티커 추출 (에코프로 등 유명 종목 대응)
+    try:
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        search_res = requests.get(f"https://search.naver.com/search.naver?query={query}+종목코드", headers=headers, timeout=5)
+        soup = BeautifulSoup(search_res.text, 'html.parser')
+        # 종목코드 패턴 (6자리 숫자) 찾기
+        code_match = re.search(r'(\d{6})', soup.text)
+        if code_match:
+            return code_match.group(1)
+    except: pass
+
+    # 4. 야후 파이낸스 검색 (해외 종목)
     try:
         headers = {'User-Agent': 'Mozilla/5.0'}
         res = requests.get(f"https://query2.finance.yahoo.com/v1/finance/search?q={query}", headers=headers, timeout=5).json()
         if res.get('quotes'): return res['quotes'][0]['symbol']
     except: pass
-    if re.match(r'^\d{6}$', query): return query
+    
+    # 5. 마지막 수단: 대문자 티커 확인
     if re.match(r'^[A-Z.=-]{1,10}$', query.upper()): return query.upper()
     return None
 
@@ -216,7 +235,7 @@ if db is not None:
                 elif buy_p <= 0: st.error("평단가는 0보다 커야 합니다.")
                 elif qty <= 0: st.error("수량은 1개 이상이어야 합니다.")
                 else:
-                    with st.spinner('유효성 검증 중...'):
+                    with st.spinner(f"'{name}'의 티커(코드)를 확인하는 중..."):
                         validated_ticker = validate_and_get_ticker(name)
                         if validated_ticker:
                             payload = {
@@ -231,7 +250,7 @@ if db is not None:
                                 if db_action("update", target_data['id'], payload): st.rerun()
                             else: 
                                 if db_action("add", data=payload): st.rerun()
-                        else: st.error(f"'{name}'의 티커를 찾을 수 없습니다.")
+                        else: st.error(f"'{name}'의 티커를 찾을 수 없습니다. 종목코드를 직접 입력해보세요 (예: 086520)")
             
             if target_data and btn_col2.button("삭제하기", use_container_width=True):
                 if db_action("delete", target_data['id']): st.rerun()
@@ -243,7 +262,6 @@ if db is not None:
                 curr, _, _ = get_finance_data(item['ticker'])
                 profit_p = (curr / item['buy_price'] - 1) * 100 if item['buy_price'] > 0 else 0
                 
-                # 에러 발생 지점 수정: pd.to_datetime을 사용하여 데이터 타입 강제 변환
                 try:
                     b_date_str = pd.to_datetime(item['buy_date']).strftime('%Y-%m-%d')
                 except:
