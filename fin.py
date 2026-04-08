@@ -126,10 +126,10 @@ def validate_and_get_ticker(name):
     query = name.strip()
     if not query: return None
     
-    # 1. 이미 6자리 숫자인 경우 그대로 반환
+    # 1. 이미 6자리 숫자인 경우 (종목코드 직접 입력 대응)
     if re.match(r'^\d{6}$', query): return query
     
-    # 2. 네이버 금융 자동완성 API 시도
+    # 2. 네이버 금융 자동완성 API 시도 (가장 빠른 방법)
     try:
         search_url = f"https://ac.finance.naver.com/ac?q={query}&st=111&r_format=json&t_koreng=1"
         res = requests.get(search_url, timeout=5).json()
@@ -137,12 +137,19 @@ def validate_and_get_ticker(name):
             return res['items'][0][0][1]
     except: pass
     
-    # 3. 네이버 통합 검색 결과에서 티커 추출 (에코프로 등 유명 종목 대응)
+    # 3. 네이버 검색 엔진 직접 쿼리 (에코프로 등 유명 종목 대응 강화)
     try:
         headers = {'User-Agent': 'Mozilla/5.0'}
-        search_res = requests.get(f"https://search.naver.com/search.naver?query={query}+종목코드", headers=headers, timeout=5)
-        soup = BeautifulSoup(search_res.text, 'html.parser')
-        # 종목코드 패턴 (6자리 숫자) 찾기
+        search_url = f"https://search.naver.com/search.naver?query={query}+주가"
+        res = requests.get(search_url, headers=headers, timeout=5)
+        soup = BeautifulSoup(res.text, 'html.parser')
+        
+        # HTML 내에서 'data-area-code' 또는 티커 패턴 추출
+        ticker_search = re.search(r'area-code="(\d{6})"', res.text)
+        if ticker_search:
+            return ticker_search.group(1)
+            
+        # 텍스트 기반 검색
         code_match = re.search(r'(\d{6})', soup.text)
         if code_match:
             return code_match.group(1)
@@ -205,7 +212,7 @@ if db is not None:
             target_data = next((p for p in portfolio_raw if p['name'] == edit_target), None)
             
             c1, c2, c3 = st.columns(3)
-            name = c1.text_input("종목명", value=target_data['name'] if target_data else "")
+            name = c1.text_input("종목명 또는 코드", value=target_data['name'] if target_data else "", placeholder="예: 에코프로 또는 086520")
             buy_p = c2.number_input("평단가", value=float(target_data['buy_price']) if target_data else 0.0, min_value=0.0)
             qty = c3.number_input("수량", value=int(target_data['quantity']) if target_data else 0, min_value=0)
             
@@ -213,7 +220,6 @@ if db is not None:
             sl_val = c4.number_input("손절가 (%)", value=float(target_data.get('sl', -10.0)) if target_data else -10.0)
             tp_val = c5.number_input("익절가 (%)", value=float(target_data.get('tp', 20.0)) if target_data else 20.0)
             
-            # 날짜 변환 로직 보완 (에러 방지)
             def safe_to_date(val):
                 if isinstance(val, datetime): return val.date()
                 try: return pd.to_datetime(val).date()
@@ -223,7 +229,6 @@ if db is not None:
             b_date = c6.date_input("매수일", value=b_date_val)
 
             c7, c8 = st.columns([1, 2])
-            
             s_date_val = safe_to_date(target_data.get('sell_date')) if target_data and 'sell_date' in target_data else (datetime.now() + timedelta(days=30)).date()
             s_date = c7.date_input("매도(예정)일", value=s_date_val)
             
@@ -235,7 +240,7 @@ if db is not None:
                 elif buy_p <= 0: st.error("평단가는 0보다 커야 합니다.")
                 elif qty <= 0: st.error("수량은 1개 이상이어야 합니다.")
                 else:
-                    with st.spinner(f"'{name}'의 티커(코드)를 확인하는 중..."):
+                    with st.spinner(f"'{name}' 데이터 확인 중..."):
                         validated_ticker = validate_and_get_ticker(name)
                         if validated_ticker:
                             payload = {
@@ -250,7 +255,8 @@ if db is not None:
                                 if db_action("update", target_data['id'], payload): st.rerun()
                             else: 
                                 if db_action("add", data=payload): st.rerun()
-                        else: st.error(f"'{name}'의 티커를 찾을 수 없습니다. 종목코드를 직접 입력해보세요 (예: 086520)")
+                        else: 
+                            st.error(f"'{name}'의 코드를 찾을 수 없습니다. 종목코드 6자리(예: 086520)를 직접 입력해 보세요.")
             
             if target_data and btn_col2.button("삭제하기", use_container_width=True):
                 if db_action("delete", target_data['id']): st.rerun()
@@ -297,7 +303,6 @@ if db is not None:
             ana_name = st.selectbox("분석 대상 선택", [p['name'] for p in portfolio_raw])
             ana_item = next(p for p in portfolio_raw if p['name'] == ana_name)
             
-            # 매매일지 표시 섹션
             if ana_item.get('note'):
                 with st.chat_message("user", avatar="📝"):
                     st.markdown(f"**매매일지:** \n{ana_item['note']}")
