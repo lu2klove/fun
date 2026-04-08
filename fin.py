@@ -154,42 +154,58 @@ COMPANY_TICKER_MAP = {
 }
 
 def search_ticker(query):
+    """야후 파이낸스 검색 API를 사용하여 쿼리에 해당하는 티커를 찾습니다."""
     try:
+        # 검색 쿼리 정제 (특수문자 제거)
+        query = re.sub(r'[^a-zA-Z0-9가-힣\s]', '', query)
+        if not query.strip(): return None
+        
         url = f"https://query2.finance.yahoo.com/v1/finance/search?q={query}"
-        res = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'})
+        res = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=5)
+        if res.status_code != 200: return None
+        
         data = res.json()
-        if data.get('quotes'): return data['quotes'][0]['symbol']
-    except: pass
+        if data.get('quotes'):
+            # 첫 번째 결과 반환 (가장 관련성 높은 티커)
+            return data['quotes'][0]['symbol']
+    except Exception as e:
+        print(f"Ticker Search Error: {e}")
     return None
 
 def validate_and_get_ticker(name):
     """종목명을 티커로 변환하고 유효성을 검증합니다."""
     clean = name.strip()
+    if not clean: return None
+    
     # 1. 수동 맵핑 확인
     if clean in COMPANY_TICKER_MAP:
         return COMPANY_TICKER_MAP[clean]
     
-    # 2. 티커 형태인 경우(영문 대문자+숫자/점) 직접 확인
-    if clean.replace(".","").isalnum() and clean.upper() == clean:
-        ticker = clean
-    else:
-        # 3. 야후 파이낸스 검색
-        ticker = search_ticker(clean)
+    # 2. 티커 형태인 경우(영문 대문자+숫자/점/대시) 직접 확인
+    # 한글이 포함되어 있다면 검색으로 넘김
+    has_korean = bool(re.search('[가-힣]', clean))
     
-    if ticker:
-        # 4. 실제 데이터가 존재하는지 최종 확인
+    ticker_candidate = None
+    if not has_korean and clean.replace(".","").replace("-","").isalnum():
+        ticker_candidate = clean.upper()
+    else:
+        # 3. 야후 파이낸스 검색 실행
+        ticker_candidate = search_ticker(clean)
+    
+    if ticker_candidate:
+        # 4. 실제 데이터가 존재하는지 최종 확인 (Fast Check)
         try:
-            yt = yf.Ticker(ticker)
+            yt = yf.Ticker(ticker_candidate)
+            # 아주 짧은 기간의 데이터를 호출하여 티커의 유효성 확인
             hist = yt.history(period="1d")
             if not hist.empty:
-                return ticker
+                return ticker_candidate
         except:
             pass
             
     return None
 
 def get_ticker_from_name(name):
-    # 등록 시에는 validate_and_get_ticker를 사용하므로, 이 함수는 레거시 지원용으로 유지
     clean = name.strip()
     if clean in COMPANY_TICKER_MAP: return COMPANY_TICKER_MAP[clean]
     if clean.replace(".","").isalnum() and clean.upper() == clean: return clean
@@ -198,7 +214,7 @@ def get_ticker_from_name(name):
 
 # --- 6. UI 구성 ---
 st.title("📊 글로벌 경제 통합 대시보드")
-st.caption(f"버전: 2026-04-08 V1.4 | DB: richfin | {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+st.caption(f"버전: 2026-04-08 V1.5 | DB: richfin | {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
 if db is None:
     st.error("❌ Firestore 연결에 실패했습니다.")
@@ -228,9 +244,9 @@ else:
     with col_list:
         st.subheader("💼 내 포트폴리오 관리")
         
-        with st.expander("➕ 새 종목 등록"):
+        with st.expander("➕ 새 종목 등록", expanded=True):
             c1, c2, c3 = st.columns(3)
-            in_name = c1.text_input("종목명 (예: 삼성전자, NVDA)", key="reg_name")
+            in_name = c1.text_input("종목명 또는 티커 (예: 삼성전자, AAPL)", key="reg_name")
             in_buy = c2.number_input("평단가", min_value=0.0)
             in_qty = c3.number_input("수량", min_value=0)
             cc1, cc2, cc3 = st.columns(3)
@@ -247,7 +263,7 @@ else:
                     st.warning("유효한 평단가를 입력해주세요.")
                 else:
                     # 종목 검증 및 티커 추출
-                    with st.spinner(f"'{in_name}' 종목 정보를 확인 중..."):
+                    with st.spinner(f"'{in_name}' 유효성 검증 중..."):
                         valid_ticker = validate_and_get_ticker(in_name)
                     
                     if valid_ticker:
@@ -255,7 +271,7 @@ else:
                             st.success(f"✅ {in_name} ({valid_ticker}) 등록 완료!")
                             st.rerun()
                     else:
-                        st.error(f"❌ '{in_name}'에 해당하는 유효한 주식 티커를 찾을 수 없습니다. 정확한 종목명이나 티커(예: AAPL)를 입력해주세요.")
+                        st.error(f"❌ '{in_name}'은(는) 유효한 주식 종목으로 확인되지 않습니다. 오타가 없는지 확인하거나 정확한 티커명(예: NVDA)을 입력해 보세요.")
 
         portfolio = get_portfolio_from_db()
         if portfolio:
