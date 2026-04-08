@@ -10,7 +10,7 @@ import re
 
 # --- 1. 페이지 설정 ---
 st.set_page_config(
-    page_title="Global Financial Dashboard V1.8",
+    page_title="Global Financial Dashboard V2.0",
     page_icon="📈",
     layout="wide"
 )
@@ -150,30 +150,50 @@ def get_info_data(ticker):
 COMPANY_TICKER_MAP = {
     "삼성전자": "005930.KS", "SK하이닉스": "000660.KS", "네이버": "035420.KS",
     "카카오": "035720.KS", "현대차": "005380.KS", "애플": "AAPL", "테슬라": "TSLA",
-    "엔비디아": "NVDA", "비트코인": "BTC-USD", "S&P500": "^GSPC", "나스닥": "^IXIC"
+    "엔비디아": "NVDA", "비트코인": "BTC-USD", "S&P500": "^GSPC", "나스닥": "^IXIC",
+    "에코프로": "086520.KQ", "에코프로비엠": "247540.KQ"
 }
 
-def search_ticker(query):
-    """야후 파이낸스 검색 API를 사용하여 쿼리에 해당하는 티커를 찾습니다."""
+def search_ticker_korea(query):
+    """네이버 금융 검색을 활용하여 한국 종목 코드를 찾습니다."""
     try:
-        # 검색 쿼리 정제 (특수문자 제거)
+        # 네이버 금융 종목 검색 API 시뮬레이션
+        url = f"https://ac.finance.naver.com/ac?q={query}&q_enc=euc-kr&st=111&frm=stock&r_format=json&r_enc=euc-kr&r_unicode=1&t_koreng=1"
+        res = requests.get(url, timeout=5)
+        if res.status_code == 200:
+            data = res.json()
+            items = data.get('items', [[]])[0]
+            if items:
+                # 검색 결과 중 첫 번째 아이템의 코드 추출 (예: ['에코프로', '086520', '...', '...'])
+                code = items[0][1]
+                # 한국 시장은 .KS(코스피) 또는 .KQ(코스닥)가 필요함. 
+                # yfinance에서 둘 다 시도해보거나, 일반적인 패턴으로 접미사 부여
+                for suffix in [".KQ", ".KS"]:
+                    test_ticker = code + suffix
+                    yt = yf.Ticker(test_ticker)
+                    if not yt.history(period="1d").empty:
+                        return test_ticker
+    except:
+        pass
+    return None
+
+def search_ticker_global(query):
+    """야후 파이낸스 검색 API를 사용합니다."""
+    try:
         query = re.sub(r'[^a-zA-Z0-9가-힣\s]', '', query)
         if not query.strip(): return None
-        
         url = f"https://query2.finance.yahoo.com/v1/finance/search?q={query}"
         res = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=5)
-        if res.status_code != 200: return None
-        
-        data = res.json()
-        if data.get('quotes'):
-            # 첫 번째 결과 반환 (가장 관련성 높은 티커)
-            return data['quotes'][0]['symbol']
-    except Exception as e:
-        print(f"Ticker Search Error: {e}")
+        if res.status_code == 200:
+            data = res.json()
+            if data.get('quotes'):
+                return data['quotes'][0]['symbol']
+    except:
+        pass
     return None
 
 def validate_and_get_ticker(name):
-    """종목명을 티커로 변환하고 유효성을 검증합니다."""
+    """종목명을 티커로 변환하고 다중 소스를 통해 유효성을 검증합니다."""
     clean = name.strip()
     if not clean: return None
     
@@ -181,24 +201,22 @@ def validate_and_get_ticker(name):
     if clean in COMPANY_TICKER_MAP:
         return COMPANY_TICKER_MAP[clean]
     
-    # 2. 티커 형태인 경우(영문 대문자+숫자/점/대시) 직접 확인
-    # 한글이 포함되어 있다면 검색으로 넘김
-    has_korean = bool(re.search('[가-힣]', clean))
+    # 2. 한국 시장 우선 검색 (한글이 포함된 경우)
+    if bool(re.search('[가-힣]', clean)):
+        kr_ticker = search_ticker_korea(clean)
+        if kr_ticker: return kr_ticker
+        
+    # 3. 글로벌 검색 (Yahoo Finance)
+    ticker_candidate = search_ticker_global(clean)
     
-    ticker_candidate = None
-    if not has_korean and clean.replace(".","").replace("-","").isalnum():
+    # 4. 티커 형태 직접 입력 확인
+    if not ticker_candidate and clean.replace(".","").replace("-","").isalnum():
         ticker_candidate = clean.upper()
-    else:
-        # 3. 야후 파이낸스 검색 실행
-        ticker_candidate = search_ticker(clean)
     
     if ticker_candidate:
-        # 4. 실제 데이터가 존재하는지 최종 확인 (Fast Check)
         try:
             yt = yf.Ticker(ticker_candidate)
-            # 아주 짧은 기간의 데이터를 호출하여 티커의 유효성 확인
-            hist = yt.history(period="1d")
-            if not hist.empty:
+            if not yt.history(period="1d").empty:
                 return ticker_candidate
         except:
             pass
@@ -208,13 +226,13 @@ def validate_and_get_ticker(name):
 def get_ticker_from_name(name):
     clean = name.strip()
     if clean in COMPANY_TICKER_MAP: return COMPANY_TICKER_MAP[clean]
-    if clean.replace(".","").isalnum() and clean.upper() == clean: return clean
-    found = search_ticker(clean)
+    # 상세 페이지용 (이미 검증된 데이터 사용 권장)
+    found = validate_and_get_ticker(clean)
     return found if found else clean.upper()
 
 # --- 6. UI 구성 ---
 st.title("📊 글로벌 경제 통합 대시보드")
-st.caption(f"버전: 2026-04-08 V1.5 | DB: richfin | {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+st.caption(f"버전: 2026-04-08 V2.0 | DB: richfin | {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
 if db is None:
     st.error("❌ Firestore 연결에 실패했습니다.")
@@ -246,7 +264,7 @@ else:
         
         with st.expander("➕ 새 종목 등록", expanded=True):
             c1, c2, c3 = st.columns(3)
-            in_name = c1.text_input("종목명 또는 티커 (예: 삼성전자, AAPL)", key="reg_name")
+            in_name = c1.text_input("종목명 또는 티커 (예: 삼성전자, 애플, 에코프로)", key="reg_name")
             in_buy = c2.number_input("평단가", min_value=0.0)
             in_qty = c3.number_input("수량", min_value=0)
             cc1, cc2, cc3 = st.columns(3)
@@ -262,8 +280,7 @@ else:
                 elif in_buy <= 0:
                     st.warning("유효한 평단가를 입력해주세요.")
                 else:
-                    # 종목 검증 및 티커 추출
-                    with st.spinner(f"'{in_name}' 유효성 검증 중..."):
+                    with st.spinner(f"'{in_name}' 유효성 검증 및 데이터 매핑 중..."):
                         valid_ticker = validate_and_get_ticker(in_name)
                     
                     if valid_ticker:
@@ -271,7 +288,7 @@ else:
                             st.success(f"✅ {in_name} ({valid_ticker}) 등록 완료!")
                             st.rerun()
                     else:
-                        st.error(f"❌ '{in_name}'은(는) 유효한 주식 종목으로 확인되지 않습니다. 오타가 없는지 확인하거나 정확한 티커명(예: NVDA)을 입력해 보세요.")
+                        st.error(f"❌ '{in_name}' 종목을 찾을 수 없습니다. (한국 종목은 정확한 명칭을, 해외 종목은 티커를 입력해주세요.)")
 
         portfolio = get_portfolio_from_db()
         if portfolio:
