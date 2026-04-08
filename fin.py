@@ -116,18 +116,20 @@ def get_chart_data(ticker, period="1개월"):
     except: return pd.DataFrame()
 
 def validate_and_get_ticker(name):
-    """입력된 종목명/코드를 검증하고 유효한 티커를 반환합니다."""
+    """입력된 종목명/코드를 검증하고 유효한 티커를 반환합니다. 한국 주식 우선 순위 반영."""
     query = name.strip()
     if not query: return None
 
-    # 1. 한국 종목 검색 (네이버 API)
+    # 1. 한국 종목 검색 (네이버 API - 에코프로 등 검색 최적화)
     try:
+        # 네이버 금융 자동완성 API 활용
         res = requests.get(f"https://ac.finance.naver.com/ac?q={query}&st=111&r_format=json&t_koreng=1", timeout=5).json()
         items = res.get('items', [[]])[0]
-        if items: 
-            # 검색 결과 중 가장 관련성 높은 코드 반환 (숫자 6자리)
+        if items:
+            # 첫 번째 검색 결과가 가장 정확함. 코드값(예: 086520) 추출
             return items[0][1]
-    except: pass
+    except Exception as e:
+        pass
     
     # 2. 해외 종목 검색 (야후 API)
     try:
@@ -135,11 +137,12 @@ def validate_and_get_ticker(name):
         res = requests.get(f"https://query2.finance.yahoo.com/v1/finance/search?q={query}", headers=headers, timeout=5).json()
         if res.get('quotes'): 
             return res['quotes'][0]['symbol']
-    except: pass
+    except Exception as e:
+        pass
     
-    # 3. 직접 티커 입력 시 (숫자 6자리 또는 영문 대문자 검증)
+    # 3. 직접 티커 형식 검증 (숫자 6자리 또는 일반적인 티커 형식)
     if re.match(r'^\d{6}$', query): return query
-    if query.isalpha(): return query.upper()
+    if re.match(r'^[A-Z.=-]{1,10}$', query.upper()): return query.upper()
     
     return None
 
@@ -190,7 +193,7 @@ if db is not None:
             target_data = next((p for p in portfolio_raw if p['name'] == edit_target), None)
             
             c1, c2, c3 = st.columns(3)
-            name = c1.text_input("종목명 (예: 삼성전자, AAPL)", value=target_data['name'] if target_data else "")
+            name = c1.text_input("종목명 (예: 에코프로, 삼성전자, NVDA)", value=target_data['name'] if target_data else "")
             buy_p = c2.number_input("평단가", value=float(target_data['buy_price']) if target_data else 0.0, min_value=0.0)
             qty = c3.number_input("수량", value=int(target_data['quantity']) if target_data else 0, min_value=0)
             
@@ -201,38 +204,43 @@ if db is not None:
             
             btn_col1, btn_col2 = st.columns(2)
             if btn_col1.button("저장하기", use_container_width=True, type="primary"):
-                # --- 유효성 검증 로직 시작 ---
-                if not name:
+                # --- 유효성 검증 로직 강화 ---
+                if not name.strip():
                     st.error("종목명을 입력해주세요.")
                 elif buy_p <= 0:
-                    st.error("평단가는 0보다 커야 합니다.")
+                    st.error("평단가는 0보다 커야 등록이 가능합니다.")
                 elif qty <= 0:
-                    st.error("수량은 1개 이상이어야 합니다.")
+                    st.error("수량은 1개 이상이어야 등록이 가능합니다.")
                 else:
-                    with st.spinner('종목 정보를 확인 중입니다...'):
+                    with st.spinner('시장 데이터를 확인하고 있습니다...'):
                         validated_ticker = validate_and_get_ticker(name)
                         if validated_ticker:
-                            payload = {
-                                "name": name, "ticker": validated_ticker, "buy_price": buy_p, 
-                                "quantity": qty, "sl": sl_val, "tp": tp_val, 
-                                "buy_date": datetime.combine(b_date, datetime.min.time()), 
-                                "created_at": datetime.now()
-                            }
-                            if target_data: 
-                                if db_action("update", target_data['id'], payload):
-                                    st.success(f"{name} 정보가 수정되었습니다.")
-                                    st.rerun()
-                            else: 
-                                if db_action("add", data=payload):
-                                    st.success(f"{name} 종목이 등록되었습니다.")
-                                    st.rerun()
+                            # 실제 주가 데이터가 존재하는지도 확인 (최종 검증)
+                            check_p, _, _ = get_finance_data(validated_ticker)
+                            if check_p == 0.0:
+                                st.error(f"'{name}'은(는) 유효한 종목이지만 시세 정보를 가져올 수 없습니다. 티커를 직접 확인해주세요.")
+                            else:
+                                payload = {
+                                    "name": name, "ticker": validated_ticker, "buy_price": buy_p, 
+                                    "quantity": qty, "sl": sl_val, "tp": tp_val, 
+                                    "buy_date": datetime.combine(b_date, datetime.min.time()), 
+                                    "created_at": datetime.now()
+                                }
+                                if target_data: 
+                                    if db_action("update", target_data['id'], payload):
+                                        st.success(f"'{name}' 정보가 수정되었습니다.")
+                                        st.rerun()
+                                else: 
+                                    if db_action("add", data=payload):
+                                        st.success(f"'{name}' 종목이 성공적으로 등록되었습니다.")
+                                        st.rerun()
                         else:
-                            st.error(f"'{name}'에 해당하는 시장 티커를 찾을 수 없습니다. 정확한 종목명이나 티커를 입력해주세요.")
+                            st.error(f"'{name}'에 해당하는 시장 티커(코드)를 찾을 수 없습니다. 정확한 종목명이나 코드를 입력해주세요.")
                 # --- 유효성 검증 로직 끝 ---
             
             if target_data and btn_col2.button("삭제하기", use_container_width=True):
                 if db_action("delete", target_data['id']):
-                    st.warning(f"{target_data['name']} 종목이 삭제되었습니다.")
+                    st.warning(f"'{target_data['name']}' 종목이 삭제되었습니다.")
                     st.rerun()
 
         # 포트폴리오 목록
