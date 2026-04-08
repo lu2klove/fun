@@ -146,7 +146,7 @@ def db_action(action, doc_id=None, data=None):
 st.title("📊 Global Finance Dashboard V2.1")
 
 if db is not None:
-    # --- 1. 상단 지표 (기간 선택 추가) ---
+    # --- 1. 상단 지표 ---
     st.subheader("🌐 글로벌 시장 주요 지표")
     idx_period = st.radio("지표 기간", ["1일", "1개월", "1년"], horizontal=True, label_visibility="collapsed")
     indices = [("^KS11", "KOSPI"), ("^KQ11", "KOSDAQ"), ("^IXIC", "NASDAQ"), ("^GSPC", "S&P500"), ("KRW=X", "USD/KRW"), ("BTC-USD", "BTC")]
@@ -171,7 +171,7 @@ if db is not None:
     with col_left:
         st.subheader("💼 내 포트폴리오 관리")
         
-        # 종목 등록/수정 모달(Expander)
+        # 종목 등록/수정 모달
         with st.expander("➕ 종목 등록 / 📝 수정", expanded=False):
             portfolio_raw = [{"id": d.id, **d.to_dict()} for d in db.collection(COLLECTION_NAME).stream()]
             edit_target = st.selectbox("수정할 종목 선택 (새 등록은 '신규 등록')", ["신규 등록"] + [p['name'] for p in portfolio_raw])
@@ -200,7 +200,7 @@ if db is not None:
                 db_action("delete", target_data['id'])
                 st.rerun()
 
-        # 포트폴리오 목록 (색상 및 굵기 적용)
+        # 포트폴리오 목록
         if portfolio_raw:
             display_rows = []
             for item in portfolio_raw:
@@ -223,13 +223,10 @@ if db is not None:
             
             def style_portfolio(row):
                 styles = [''] * len(row)
-                # 수익률/수익금 색상
                 p_color = 'color: #FF4B4B' if row['수익률'] > 0 else 'color: #1C83E1' if row['수익률'] < 0 else ''
                 styles[3] = p_color + '; font-weight: bold'
                 styles[4] = p_color + '; font-weight: bold'
-                # 손절가 (굵은 파랑)
                 styles[5] = 'color: #1C83E1; font-weight: 900'
-                # 익절가 (굵은 녹색)
                 styles[6] = 'color: #28A745; font-weight: 900'
                 return styles
 
@@ -246,8 +243,8 @@ if db is not None:
             ana_name = st.selectbox("분석 종목", [p['name'] for p in portfolio_raw])
             ana_item = next(p for p in portfolio_raw if p['name'] == ana_name)
             
-            # 기간 선택
-            ana_period = st.segment_control("조회 기간", ["1일", "1개월", "3개월", "1년", "5년"], default="1개월")
+            # 기간 선택 (AttributeError 해결을 위해 radio로 변경)
+            ana_period = st.radio("조회 기간", ["1일", "1개월", "3개월", "1년", "5년"], index=1, horizontal=True)
             
             # 차트
             st.write(f"📈 **{ana_name}** 주가 흐름")
