@@ -52,7 +52,7 @@ def get_naver_ticker_info(code):
     """네이버 금융 파싱: 실시간 시세 및 펀더멘털"""
     try:
         url = f"https://finance.naver.com/item/main.naver?code={code}"
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36'}
         res = requests.get(url, headers=headers, timeout=5)
         soup = BeautifulSoup(res.text, 'html.parser')
         
@@ -84,11 +84,13 @@ def get_naver_ticker_info(code):
 
 @st.cache_data(ttl=60)
 def get_finance_data(ticker):
-    match = re.match(r'^(\d{6})', ticker)
-    if match:
-        data = get_naver_ticker_info(match.group(1))
-        if data and data['price'] > 0: return data['price'], data['change'], data['pct']
+    # 한국 종목 코드인 경우 (6자리 숫자)
+    if re.match(r'^\d{6}$', ticker):
+        data = get_naver_ticker_info(ticker)
+        if data and data['price'] > 0:
+            return data['price'], data['change'], data['pct']
     
+    # 그 외 (해외 티커 등)
     try:
         yt = yf.Ticker(ticker)
         hist = yt.history(period="5d")
@@ -102,69 +104,63 @@ def get_finance_data(ticker):
 @st.cache_data(ttl=300)
 def get_chart_data(ticker, period="1개월"):
     """기간별 차트 데이터 수집"""
-    try:
-        if re.match(r'^\d{6}$', ticker):
-            for suffix in [".KS", ".KQ"]:
-                yt = yf.Ticker(ticker + suffix)
-                period_map = {"1일": "1d", "1개월": "1mo", "3개월": "3mo", "1년": "1y", "5년": "5y"}
-                p = period_map.get(period, "1mo")
-                interval = "5m" if p == "1d" else "1d"
-                data = yt.history(period=p, interval=interval)
+    period_map = {"1일": "1d", "1개월": "1mo", "3개월": "3mo", "1년": "1y", "5년": "5y"}
+    p = period_map.get(period, "1mo")
+    interval = "5m" if p == "1d" else "1d"
+    
+    # 한국 종목인 경우 yfinance 호환을 위해 접미사 시도
+    if re.match(r'^\d{6}$', ticker):
+        for suffix in [".KS", ".KQ"]:
+            try:
+                data = yf.Ticker(ticker + suffix).history(period=p, interval=interval)
                 if not data.empty: return data[['Close']]
-            return pd.DataFrame()
-        else:
-            yt = yf.Ticker(ticker)
-            period_map = {"1일": "1d", "1개월": "1mo", "3개월": "3mo", "1년": "1y", "5년": "5y"}
-            p = period_map.get(period, "1mo")
-            interval = "5m" if p == "1d" else "1d"
-            data = yt.history(period=p, interval=interval)
+            except: continue
+        return pd.DataFrame()
+    else:
+        try:
+            data = yf.Ticker(ticker).history(period=p, interval=interval)
             return data[['Close']]
-    except: return pd.DataFrame()
+        except: return pd.DataFrame()
 
 def validate_and_get_ticker(name):
-    """국내 주식 검색 성공률을 극대화한 티커 검증 로직"""
+    """한국 주식 검색 실패를 방지하는 획기적 개선 로직"""
     query = name.strip()
     if not query: return None
     
     # 1. 이미 6자리 숫자인 경우 즉시 반환
     if re.match(r'^\d{6}$', query): return query
     
-    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36',
+        'Referer': 'https://finance.naver.com/'
+    }
 
-    # 2. 획기적 개선: 네이버 금융 통합검색 API (새로운 경로)
-    try:
-        # 네이버 금융의 '종목명 검색' 시뮬레이션
-        search_api = f"https://finance.naver.com/api/search/searchList.naver?query={query}"
-        res = requests.get(search_api, headers=headers, timeout=5).json()
-        if res.get('searchList'):
-            # 가장 일치도가 높은 첫 번째 검색 결과의 code 반환
-            return res['searchList'][0]['itemCode']
-    except: pass
-
-    # 3. 보조: 기존 자동완성 API
+    # 2. 개선된 네이버 금융 자동완성 API (st=111: 국내외 통합)
     try:
         ac_url = f"https://ac.finance.naver.com/ac?q={query}&st=111&r_format=json&t_koreng=1"
-        res = requests.get(ac_url, timeout=3).json()
-        if res.get('items') and len(res['items'][0]) > 0:
+        res = requests.get(ac_url, headers=headers, timeout=5).json()
+        if res.get('items') and res['items'][0]:
+            # 첫 번째 결과의 [이름, 코드, ...] 구조에서 코드를 가져옴
             return res['items'][0][0][1]
     except: pass
-    
-    # 4. 강제 파싱: 네이버 검색 결과 본문에서 6자리 패턴 추출
+
+    # 3. 네이버 검색 결과 직접 파싱 (에코프로 등 유명 종목의 확실한 방법)
     try:
-        search_url = f"https://search.naver.com/search.naver?query={query}+종목코드"
+        search_url = f"https://search.naver.com/search.naver?query={query}"
         res = requests.get(search_url, headers=headers, timeout=5)
-        # HTML 내 주식 코드 전용 메타데이터 태그 탐색
-        ticker_match = re.search(r'data-area-code="(\d{6})"', res.text)
-        if ticker_match: return ticker_match.group(1)
+        # 종목코드 6자리 정규식 추출
+        match = re.search(r'data-area-code="(\d{6})"', res.text)
+        if match: return match.group(1)
         
-        # '에코프로(086520)' 형태의 텍스트 패턴 탐색
-        text_match = re.search(r'\((\d{6})\)', res.text)
-        if text_match: return text_match.group(1)
+        # '에코프로(086520)' 등의 텍스트 패턴 추출
+        match = re.search(r'\((\d{6})\)', res.text)
+        if match: return match.group(1)
     except: pass
 
-    # 5. 해외 주식 (야후 파이낸스)
+    # 4. 야후 파이낸스 검색 (해외 종목)
     try:
-        res = requests.get(f"https://query2.finance.yahoo.com/v1/finance/search?q={query}", headers=headers, timeout=5).json()
+        y_url = f"https://query2.finance.yahoo.com/v1/finance/search?q={query}"
+        res = requests.get(y_url, headers=headers, timeout=5).json()
         if res.get('quotes'): return res['quotes'][0]['symbol']
     except: pass
     
