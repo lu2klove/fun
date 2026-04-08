@@ -108,4 +108,143 @@ with col_right:
     sp_price, _, sp_pct = get_finance_data("^GSPC")
     nas_price, _, nas_pct = get_finance_data("^IXIC")
 
-    u_col
+    u_col1.metric("S&P 500", f"{sp_price:,.2f}", f"{sp_pct:+.2f}%")
+    u_col2.metric("NASDAQ", f"{nas_price:,.2f}", f"{nas_pct:+.2f}%")
+
+    sp_df = get_chart_data("^GSPC", "S&P 500", period=selected_u_period)
+    nas_df = get_chart_data("^IXIC", "NASDAQ", period=selected_u_period)
+
+    if not sp_df.empty:
+        st.line_chart(pd.concat([sp_df, nas_df], axis=1), height=250)
+
+st.divider()
+
+# 2. 중간: 경제 지표 분석
+st.subheader("🌐 주요 경제 지표 분석")
+eco_period_label = st.radio("지표 조회 기간", ["1일", "1개월", "1년"], index=1, horizontal=True)
+selected_eco_period = period_map[eco_period_label]
+
+col_bot1, col_bot2, col_bot3, col_bot4 = st.columns(4)
+
+with col_bot1:
+    st.write("💱 **환율 (USD/KRW)**")
+    fx_price, fx_chg, _ = get_finance_data("KRW=X")
+    st.metric("원/달러 환율", f"{fx_price:,.1f}원", f"{fx_chg:+.1f}")
+    fx_chart = get_chart_data("KRW=X", "USD/KRW", period=selected_eco_period)
+    if not fx_chart.empty: st.line_chart(fx_chart, height=150)
+
+with col_bot2:
+    st.write("🛢️ **에너지 (WTI Oil)**")
+    oil_price, _, oil_pct = get_finance_data("CL=F")
+    st.metric("WTI 유가", f"${oil_price:,.2f}", f"{oil_pct:+.2f}%")
+    oil_chart = get_chart_data("CL=F", "WTI", period=selected_eco_period)
+    if not oil_chart.empty: st.line_chart(oil_chart, height=150)
+
+with col_bot3:
+    st.write("🟡 **금 (Gold)**")
+    gold_price, _, gold_pct = get_finance_data("GC=F")
+    st.metric("금 선물", f"${gold_price:,.1f}", f"{gold_pct:+.2f}%")
+    gold_chart = get_chart_data("GC=F", "Gold", period=selected_eco_period)
+    if not gold_chart.empty: st.line_chart(gold_chart, height=150)
+
+with col_bot4:
+    st.write("⚪ **은 (Silver)**")
+    silver_price, _, silver_pct = get_finance_data("SI=F")
+    st.metric("은 선물", f"${silver_price:,.2f}", f"{silver_pct:+.2f}%")
+    silver_chart = get_chart_data("SI=F", "Silver", period=selected_eco_period)
+    if not silver_chart.empty: st.line_chart(silver_chart, height=150)
+
+st.divider()
+
+# 3. 하단: 관심 종목 분석
+st.subheader("⭐ 관심 종목 실시간 분석")
+item_period_label = st.select_slider("종목 차트 기간 설정", options=["1일", "1개월", "1년"], value="1개월")
+selected_item_period = period_map[item_period_label]
+
+input_cols = st.columns(5)
+watchlist_data = []
+
+for i in range(5):
+    name_input = input_cols[i].text_input(f"종목 {i+1}", key=f"ticker_{i}", placeholder="삼성전자/AAPL")
+    if name_input:
+        ticker = get_ticker_from_name(name_input)
+        watchlist_data.append({"name": name_input, "ticker": ticker})
+
+if watchlist_data:
+    display_cols = st.columns(len(watchlist_data))
+    for i, item in enumerate(watchlist_data):
+        with display_cols[i]:
+            price, chg, pct = get_finance_data(item["ticker"])
+            if price != 0:
+                st.metric(f"{item['name']}", f"{price:,.2f}", f"{pct:+.2f}%")
+                chart_data = get_chart_data(item["ticker"], item["name"], period=selected_item_period)
+                if not chart_data.empty: st.line_chart(chart_data, height=180)
+            else:
+                st.error("데이터 오류")
+
+st.divider()
+
+# 4. 섹션: 종목 계산기
+st.subheader("🧮 종목 투자 수익/손실 계산기")
+calc_col1, calc_col2 = st.columns([1, 2])
+
+with calc_col1:
+    st.write("📌 **투자 정보 설정**")
+    calc_name = st.text_input("계산할 종목명", placeholder="예: 삼성전자 또는 NVDA")
+
+    current_price = 0.0
+    if calc_name:
+        calc_ticker = get_ticker_from_name(calc_name)
+        current_price, _, _ = get_finance_data(calc_ticker)
+        st.info(f"💡 현재 시세: **{current_price:,.2f}**")
+
+    buy_price = st.number_input("매수 단가", value=float(current_price) if current_price > 0 else 0.0)
+    quantity = st.number_input("보유 수량", value=0, step=1)
+    
+    st.write("⚙️ **비율 설정 (%)**")
+    p_col1, p_col2, p_col3 = st.columns(3)
+    stop_loss_pct = p_col1.number_input("손절 (%)", value=5.0)
+    target1_pct = p_col2.number_input("1차익절 (%)", value=10.0)
+    target_final_pct = p_col3.number_input("최종익절 (%)", value=20.0)
+
+    total_investment = buy_price * quantity
+    st.write(f"💰 **총 투자 금액: {total_investment:,.0f}**")
+
+with calc_col2:
+    st.write("📊 **목표가 가이드라인**")
+    if total_investment > 0:
+        stop_loss = buy_price * (1 - (stop_loss_pct / 100))
+        target_1 = buy_price * (1 + (target1_pct / 100))
+        target_final = buy_price * (1 + (target_final_pct / 100))
+
+        g1, g2, g3 = st.columns(3)
+        with g1:
+            st.error(f"📉 손절가 (-{stop_loss_pct}%)")
+            st.subheader(f"{stop_loss:,.0f}")
+            st.caption(f"예상 손실: -{(total_investment * stop_loss_pct/100):,.0f}")
+        with g2:
+            st.success(f"📈 1차 목표 (+{target1_pct}%)")
+            st.subheader(f"{target_1:,.0f}")
+            st.caption(f"예상 수익: +{(total_investment * target1_pct/100):,.0f}")
+        with g3:
+            st.info(f"🚀 최종 목표 (+{target_final_pct}%)")
+            st.subheader(f"{target_final:,.0f}")
+            st.caption(f"예상 수익: +{(total_investment * target_final_pct/100):,.0f}")
+
+        if current_price > 0:
+            st.divider()
+            profit_loss = (current_price - buy_price) * quantity
+            profit_rate = ((current_price / buy_price) - 1) * 100 if buy_price > 0 else 0
+            status_color = "red" if profit_loss < 0 else "blue"
+            st.markdown(f"### 현재 평가 손익: <span style='color:{status_color};'>{profit_loss:,.0f} ({profit_rate:+.2f}%)</span>", unsafe_allow_html=True)
+    else:
+        st.info("매수 단가와 수량을 입력하면 분석 결과가 나타납니다.")
+
+# 사이드바
+st.sidebar.header("설정")
+if st.sidebar.button("데이터 새로고침"):
+    st.cache_data.clear()
+    st.rerun()
+
+st.sidebar.divider()
+st.sidebar.write("Developed by Gemini AI")
