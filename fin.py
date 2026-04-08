@@ -19,14 +19,19 @@ def init_db():
     try:
         # Streamlit secrets에서 설정 가져오기
         if "firebase" in st.secrets:
-            # JSON 문자열 내의 제어 문자 오류를 방지하기 위해 strict=False 설정 적용
             raw_json = st.secrets["firebase"]["text_key"]
             try:
+                # 1. JSON 기본 로드
                 key_dict = json.loads(raw_json, strict=False)
             except json.JSONDecodeError:
-                # 개행 문자 등으로 인한 이스케이프 오류 방어 코드
+                # 2. 제어 문자 및 개행 문자 정제 후 재시도
                 cleaned_json = raw_json.replace('\n', '\\n').replace('\r', '\\r')
                 key_dict = json.loads(cleaned_json, strict=False)
+
+            # --- PEM 파일 로드 오류 해결을 위한 핵심 로직 ---
+            # private_key 내부의 이중 이스케이프된 \\n을 실제 개행 문자 \n으로 변환
+            if "private_key" in key_dict:
+                key_dict["private_key"] = key_dict["private_key"].replace("\\n", "\n")
 
             creds = service_account.Credentials.from_service_account_info(key_dict)
             client = firestore.Client(credentials=creds, project=key_dict['project_id'])
@@ -36,7 +41,7 @@ def init_db():
             return None
     except Exception as e:
         st.error(f"DB 연결 중 오류 발생: {e}")
-        st.info("💡 팁: secrets.toml의 private_key 형식이 올바른지 확인해주세요.")
+        st.info("💡 **해결 방법:** secrets.toml 내의 private_key 값이 `-----BEGIN PRIVATE KEY-----\\n...` 형태인지 확인하고, 따옴표가 3개(`\"\"\"`)로 감싸져 있는지 확인하세요.")
         return None
 
 db = init_db()
@@ -47,10 +52,8 @@ def get_portfolio_from_db():
     if db is None:
         return []
     try:
-        # 인덱스 생성 전까지는 order_by 없이 시도하여 데이터 확인 우선
         docs = db.collection(COLLECTION_NAME).stream()
         results = [{"id": d.id, **d.to_dict()} for d in docs]
-        # 수동 정렬 (DB 인덱스 오류 방지)
         results.sort(key=lambda x: x.get('created_at', datetime.min), reverse=True)
         return results
     except Exception as e:
@@ -62,7 +65,6 @@ def add_to_portfolio(name, ticker, buy_price, quantity):
         st.error("데이터베이스에 연결되어 있지 않습니다.")
         return False
     try:
-        # Firestore에 데이터 추가 시도
         db.collection(COLLECTION_NAME).add({
             "name": name, 
             "ticker": ticker, 
@@ -72,7 +74,7 @@ def add_to_portfolio(name, ticker, buy_price, quantity):
         })
         return True
     except Exception as e:
-        st.error(f"Firestore에 데이터를 쓰는 중 오류가 발생했습니다: {e}")
+        st.error(f"Firestore 쓰기 오류: {e}")
         return False
 
 def delete_from_portfolio(doc_id):
@@ -81,7 +83,7 @@ def delete_from_portfolio(doc_id):
             db.collection(COLLECTION_NAME).document(doc_id).delete()
             return True
         except Exception as e:
-            st.error(f"삭제 중 오류 발생: {e}")
+            st.error(f"삭제 오류: {e}")
             return False
     return False
 
@@ -214,18 +216,15 @@ if portfolio:
             })
 
     if data_list:
-        # 요약 정보
         s1, s2, s3 = st.columns(3)
         s1.metric("총 매수금액", f"{total_cost:,.0f}원")
         s2.metric("총 평가금액", f"{total_eval:,.0f}원")
         total_gain_pct = (total_eval / total_cost - 1) * 100 if total_cost > 0 else 0
         s3.metric("총 손익", f"{total_eval-total_cost:,.0f}원", f"{total_gain_pct:+.2f}%")
 
-        # 데이터 프레임 출력
         df_p = pd.DataFrame(data_list)
         st.dataframe(df_p.drop(columns="ID"), use_container_width=True)
 
-        # 삭제 기능
         with st.expander("🗑️ 종목 삭제"):
             del_target = st.selectbox("삭제할 종목 선택", df_p['종목'].tolist())
             if st.button("선택한 종목 삭제"):
