@@ -21,24 +21,25 @@ def init_db():
         # Streamlit secrets에서 설정 가져오기
         if "firebase" in st.secrets:
             raw_json = st.secrets["firebase"]["text_key"]
+            
+            # --- [수정 포인트] JSON 파싱 전 원시 문자열 단계에서 개행 처리 ---
+            # r"\\n" (텍스트 그대로의 \n)을 실제 줄바꿈 문자 "\n"으로 변경
+            # 일부 OS나 편집기 환경에서 발생하는 이중 이스케이프 문제를 해결합니다.
+            processed_json = raw_json.replace("\\\\n", "\n").replace("\\n", "\n")
+            
             try:
-                # 1. JSON 기본 로드 (엄격한 검사 해제)
-                key_dict = json.loads(raw_json, strict=False)
+                # 1. 정제된 문자열로 JSON 로드
+                key_dict = json.loads(processed_json, strict=False)
             except json.JSONDecodeError:
-                # 2. JSON 구조 자체가 깨진 경우를 대비한 클리닝
-                cleaned_json = raw_json.replace('\n', '\\n').replace('\r', '\\r')
+                # 2. 실패 시 제어 문자 클리닝 후 재시도
+                cleaned_json = processed_json.replace('\n', '\\n').replace('\r', '\\r')
                 key_dict = json.loads(cleaned_json, strict=False)
 
-            # --- PEM 파일 로드 오류(InvalidByte) 해결을 위한 강화된 로직 ---
+            # --- PEM 파일 로드 오류(InvalidByte) 해결을 위한 최종 검증 ---
             if "private_key" in key_dict:
                 pk = key_dict["private_key"]
-                # (1) 문자열로 된 '\\n'을 실제 개행 문자로 변경
-                pk = pk.replace("\\n", "\n")
-                # (2) 혹시 모를 중복된 개행이나 공백 제거 후 표준 PEM 형식 확인
-                pk = pk.strip()
-                # (3) PEM 헤더/푸터 사이의 공백이 깨진 경우를 대비해 정규식으로 정제 가능하지만, 
-                # 가장 확실한 방법은 \n이 하나씩만 들어가게 하는 것입니다.
-                key_dict["private_key"] = pk
+                # 다시 한번 pk 내부의 문자열을 정제 (불필요한 공백 제거)
+                key_dict["private_key"] = pk.strip()
 
             creds = service_account.Credentials.from_service_account_info(key_dict)
             client = firestore.Client(credentials=creds, project=key_dict['project_id'])
@@ -48,17 +49,19 @@ def init_db():
             return None
     except Exception as e:
         st.error(f"DB 연결 중 오류 발생: {e}")
-        st.info("💡 **최종 해결 가이드:**")
+        st.info("💡 **여전히 오류가 발생한다면?**")
         st.markdown("""
-        1. Google Cloud 콘솔에서 다운로드한 **JSON 파일의 내용 전체**를 복사하세요.
-        2. Streamlit Secrets 설정 시 아래와 같이 입력했는지 확인하세요:
+        1. Google Cloud 콘솔에서 다운로드한 **JSON 파일**을 메모장으로 여세요.
+        2. "private_key" 항목의 값(-----BEGIN...부터 ...END-----\\n까지)만 따로 복사하세요.
+        3. 아래와 같이 `secrets.toml`에 직접 입력해 보세요:
         ```toml
         [firebase]
-        text_key = '''
-        { ... 여기에 복사한 JSON 내용 전체 ... }
-        '''
+        project_id = "당신의_프로젝트_ID"
+        private_key = \"\"\"-----BEGIN PRIVATE KEY-----
+        (여기에 줄바꿈이 포함된 실제 키 내용 붙여넣기)
+        -----END PRIVATE KEY-----\"\"\"
+        client_email = "서비스_계정_이메일"
         ```
-        3. `private_key` 값 안에 실제 줄바꿈이 있으면 안 되며, 반드시 `\\n` 문자가 포함된 한 줄의 문자열이어야 합니다.
         """)
         return None
 
