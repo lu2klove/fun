@@ -5,6 +5,7 @@ from datetime import datetime
 from google.cloud import firestore
 from google.oauth2 import service_account
 import json
+import requests
 
 # --- 1. 페이지 설정 ---
 st.set_page_config(
@@ -110,6 +111,7 @@ def delete_from_portfolio(doc_id):
 @st.cache_data(ttl=60)
 def get_finance_data(ticker):
     try:
+        if not ticker: return 0.0, 0.0, 0.0
         yt = yf.Ticker(ticker)
         data = yt.history(period="5d")
         if not data.empty and len(data) >= 2:
@@ -125,6 +127,7 @@ def get_finance_data(ticker):
 @st.cache_data(ttl=300)
 def get_chart_data(ticker, name, period="1mo"):
     try:
+        if not ticker: return pd.DataFrame()
         yt = yf.Ticker(ticker)
         data = yt.history(period=period)
         if not data.empty:
@@ -137,6 +140,7 @@ def get_chart_data(ticker, name, period="1mo"):
 @st.cache_data(ttl=3600)
 def get_info_data(ticker):
     try:
+        if not ticker: return None
         yt = yf.Ticker(ticker)
         info = yt.info
         return {
@@ -151,7 +155,7 @@ def get_info_data(ticker):
     except:
         return None
 
-# --- 5. 회사명-티커 변환 ---
+# --- 5. 회사명-티커 변환 로직 (자동 검색 강화) ---
 COMPANY_TICKER_MAP = {
     "삼성전자": "005930.KS", "SK하이닉스": "000660.KS", "네이버": "035420.KS",
     "카카오": "035720.KS", "현대차": "005380.KS", "애플": "AAPL", "테슬라": "TSLA",
@@ -159,9 +163,35 @@ COMPANY_TICKER_MAP = {
     "코스피": "^KS11", "코스닥": "^KQ11", "원달러환율": "KRW=X", "WTI유": "CL=F"
 }
 
+def search_ticker(query):
+    """야후 파이낸스 API를 통한 티커 검색"""
+    try:
+        url = f"https://query2.finance.yahoo.com/v1/finance/search?q={query}"
+        response = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'})
+        data = response.json()
+        if data.get('quotes'):
+            # 첫 번째 검색 결과 반환
+            return data['quotes'][0]['symbol']
+    except:
+        pass
+    return None
+
 def get_ticker_from_name(name):
     clean = name.strip().replace(" ", "")
-    return COMPANY_TICKER_MAP.get(clean, clean.upper())
+    # 1. 수동 맵핑 확인
+    if clean in COMPANY_TICKER_MAP:
+        return COMPANY_TICKER_MAP[clean]
+    
+    # 2. 이미 티커 형식(영문/숫자 조합)인 경우 그대로 반환
+    if any(c.isalpha() for c in clean) and clean.upper() == clean:
+        return clean
+    
+    # 3. 자동 검색 시도 (캐시 적용 권장하나 여기선 직접 수행)
+    found_ticker = search_ticker(clean)
+    if found_ticker:
+        return found_ticker
+        
+    return clean.upper()
 
 # --- 6. UI 구성 ---
 st.title("📊 글로벌 경제 통합 대시보드")
@@ -195,7 +225,7 @@ with col_list:
     
     with st.expander("➕ 새 종목 등록 (매입 정보 및 매매일지 포함)"):
         c1, c2, c3 = st.columns(3)
-        in_name = c1.text_input("종목명/티커", key="reg_name")
+        in_name = c1.text_input("종목명 (예: 삼성전자, TSLA)", key="reg_name")
         in_buy = c2.number_input("평단가", min_value=0.0, key="reg_buy")
         in_qty = c3.number_input("수량", min_value=0, key="reg_qty")
         
@@ -212,10 +242,16 @@ with col_list:
         
         if st.button("포트폴리오에 등록", use_container_width=True):
             if in_name and in_buy > 0:
-                ticker = get_ticker_from_name(in_name)
-                if add_to_portfolio(in_name, ticker, in_buy, in_qty, in_sl, in_tp1, in_tp_f, in_date, in_log):
-                    st.success(f"'{in_name}' 등록 완료!")
-                    st.rerun()
+                with st.spinner("티커를 확인 중입니다..."):
+                    ticker = get_ticker_from_name(in_name)
+                    # 티커 유효성 검사 (가격 데이터가 오는지 확인)
+                    p, _, _ = get_finance_data(ticker)
+                    if p == 0:
+                        st.error(f"'{in_name}'에 해당하는 주식 정보를 찾을 수 없습니다. 정확한 티커(예: 005930.KS)를 입력해 주세요.")
+                    else:
+                        if add_to_portfolio(in_name, ticker, in_buy, in_qty, in_sl, in_tp1, in_tp_f, in_date, in_log):
+                            st.success(f"'{in_name}'({ticker}) 등록 완료!")
+                            st.rerun()
 
     portfolio = get_portfolio_from_db()
     display_data = []
@@ -246,14 +282,15 @@ with col_list:
             tp1_price = buy * (1 + tp1_pct/100)
             tpf_price = buy * (1 + tpf_pct/100)
             
-            # DB에서 매수일자 가져오기 (없을 경우 생성일자)
+            # DB에서 매수일자 가져오기
             b_date = item.get('buy_date', item.get('created_at', datetime.now()))
             if isinstance(b_date, datetime): b_date = b_date.date()
             
             display_data.append({
                 "종목": item.get('name', 'N/A'),
-                "평단가": buy, # 현재가에서 평단가로 변경
-                "수익률": gain_pct,
+                "티커": ticker,
+                "평단가": buy,
+                "수수익률": gain_pct,
                 "수익금": gain,
                 "손절가": sl_price,
                 "sl_pct": sl_pct,
@@ -290,7 +327,7 @@ with col_list:
                 styles = [''] * len(row)
                 col_indices = {col: i for i, col in enumerate(row.index)}
                 
-                if "수익률" in col_indices: styles[col_indices["수익률"]] = gain_color
+                if "수수익률" in col_indices: styles[col_indices["수수익률"]] = gain_color
                 if "수익금" in col_indices: styles[col_indices["수익금"]] = gain_color
                 if "손절가" in col_indices: styles[col_indices["손절가"]] = 'color: #1c83e1; font-weight: bold;'
                 if "1차목표" in col_indices: styles[col_indices["1차목표"]] = 'color: #28a745; font-weight: bold;'
@@ -303,7 +340,7 @@ with col_list:
                 df_to_show.style.apply(style_portfolio, axis=1)
                 .format({
                     "평단가": "{:,.0f}",
-                    "수익률": "{:+.2f}%",
+                    "수수익률": "{:+.2f}%",
                     "수익금": "{:,.0f}"
                 })
                 .format(lambda val: f"{val:,.0f} ({full_df.loc[full_df['손절가'] == val, 'sl_pct'].values[0]:.0f}%)", subset=["손절가"])
@@ -321,10 +358,8 @@ with col_list:
                 new_buy = edit_col1.number_input("수정 평단가", value=float(selected_item_raw.get('buy_price', 0)))
                 new_qty = edit_col2.number_input("수정 수량", value=int(selected_item_raw.get('quantity', 0)))
                 
-                # 날짜 처리
                 existing_date = selected_item_raw.get('buy_date', datetime.now())
-                if not isinstance(existing_date, datetime): 
-                    existing_date = datetime.now() # 예외 방지
+                if not isinstance(existing_date, datetime): existing_date = datetime.now()
                 new_buy_date = edit_col3.date_input("수정 매수일", value=existing_date)
                 
                 edit_sl_col, edit_tp1_col, edit_tpf_col = st.columns(3)
@@ -353,7 +388,6 @@ with col_chart:
     analysis_name = st.selectbox("분석 종목", analysis_options)
     analysis_ticker = get_ticker_from_name(analysis_name)
     
-    # 해당 종목의 매매일지 보여주기
     if portfolio:
         selected_raw = next((item for item in portfolio if item.get('name') == analysis_name), None)
         if selected_raw and selected_raw.get('trading_log'):
