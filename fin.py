@@ -19,7 +19,15 @@ def init_db():
     try:
         # Streamlit secrets에서 설정 가져오기
         if "firebase" in st.secrets:
-            key_dict = json.loads(st.secrets["firebase"]["text_key"])
+            # JSON 문자열 내의 제어 문자 오류를 방지하기 위해 strict=False 설정 적용
+            raw_json = st.secrets["firebase"]["text_key"]
+            try:
+                key_dict = json.loads(raw_json, strict=False)
+            except json.JSONDecodeError:
+                # 개행 문자 등으로 인한 이스케이프 오류 방어 코드
+                cleaned_json = raw_json.replace('\n', '\\n').replace('\r', '\\r')
+                key_dict = json.loads(cleaned_json, strict=False)
+
             creds = service_account.Credentials.from_service_account_info(key_dict)
             client = firestore.Client(credentials=creds, project=key_dict['project_id'])
             return client
@@ -28,6 +36,7 @@ def init_db():
             return None
     except Exception as e:
         st.error(f"DB 연결 중 오류 발생: {e}")
+        st.info("💡 팁: secrets.toml의 private_key 형식이 올바른지 확인해주세요.")
         return None
 
 db = init_db()
@@ -54,20 +63,17 @@ def add_to_portfolio(name, ticker, buy_price, quantity):
         return False
     try:
         # Firestore에 데이터 추가 시도
-        doc_ref = db.collection(COLLECTION_NAME).add({
+        db.collection(COLLECTION_NAME).add({
             "name": name, 
             "ticker": ticker, 
             "buy_price": float(buy_price), 
             "quantity": int(quantity), 
             "created_at": datetime.now()
         })
-        # doc_ref[1]은 새로 생성된 문서의 Reference입니다.
-        if doc_ref:
-            return True
+        return True
     except Exception as e:
         st.error(f"Firestore에 데이터를 쓰는 중 오류가 발생했습니다: {e}")
         return False
-    return False
 
 def delete_from_portfolio(doc_id):
     if db:
@@ -168,7 +174,6 @@ with st.expander("➕ 새 종목 등록하기", expanded=True):
                 success = add_to_portfolio(in_name, ticker, in_buy, in_qty)
                 if success:
                     st.success(f"'{in_name}'({ticker}) 등록에 성공했습니다!")
-                    # 세션 상태 강제 동기화를 위해 데이터 재로딩 유도
                     st.rerun()
         else:
             st.warning("종목 정보(이름, 평단가, 수량)를 모두 입력해주세요.")
