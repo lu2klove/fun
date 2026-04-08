@@ -122,48 +122,52 @@ def get_chart_data(ticker, period="1개월"):
     except: return pd.DataFrame()
 
 def validate_and_get_ticker(name):
-    """종목명/코드를 검증하고 유효한 티커 반환 (강화된 로직)"""
+    """국내 주식 검색 성공률을 극대화한 티커 검증 로직"""
     query = name.strip()
     if not query: return None
     
-    # 1. 이미 6자리 숫자인 경우 (종목코드 직접 입력 대응)
+    # 1. 이미 6자리 숫자인 경우 즉시 반환
     if re.match(r'^\d{6}$', query): return query
     
-    # 2. 네이버 금융 자동완성 API 시도 (가장 빠른 방법)
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
+
+    # 2. 획기적 개선: 네이버 금융 통합검색 API (새로운 경로)
     try:
-        search_url = f"https://ac.finance.naver.com/ac?q={query}&st=111&r_format=json&t_koreng=1"
-        res = requests.get(search_url, timeout=5).json()
+        # 네이버 금융의 '종목명 검색' 시뮬레이션
+        search_api = f"https://finance.naver.com/api/search/searchList.naver?query={query}"
+        res = requests.get(search_api, headers=headers, timeout=5).json()
+        if res.get('searchList'):
+            # 가장 일치도가 높은 첫 번째 검색 결과의 code 반환
+            return res['searchList'][0]['itemCode']
+    except: pass
+
+    # 3. 보조: 기존 자동완성 API
+    try:
+        ac_url = f"https://ac.finance.naver.com/ac?q={query}&st=111&r_format=json&t_koreng=1"
+        res = requests.get(ac_url, timeout=3).json()
         if res.get('items') and len(res['items'][0]) > 0:
             return res['items'][0][0][1]
     except: pass
     
-    # 3. 네이버 검색 엔진 직접 쿼리 (에코프로 등 유명 종목 대응 강화)
+    # 4. 강제 파싱: 네이버 검색 결과 본문에서 6자리 패턴 추출
     try:
-        headers = {'User-Agent': 'Mozilla/5.0'}
-        search_url = f"https://search.naver.com/search.naver?query={query}+주가"
+        search_url = f"https://search.naver.com/search.naver?query={query}+종목코드"
         res = requests.get(search_url, headers=headers, timeout=5)
-        soup = BeautifulSoup(res.text, 'html.parser')
+        # HTML 내 주식 코드 전용 메타데이터 태그 탐색
+        ticker_match = re.search(r'data-area-code="(\d{6})"', res.text)
+        if ticker_match: return ticker_match.group(1)
         
-        # HTML 내에서 'data-area-code' 또는 티커 패턴 추출
-        ticker_search = re.search(r'area-code="(\d{6})"', res.text)
-        if ticker_search:
-            return ticker_search.group(1)
-            
-        # 텍스트 기반 검색
-        code_match = re.search(r'(\d{6})', soup.text)
-        if code_match:
-            return code_match.group(1)
+        # '에코프로(086520)' 형태의 텍스트 패턴 탐색
+        text_match = re.search(r'\((\d{6})\)', res.text)
+        if text_match: return text_match.group(1)
     except: pass
 
-    # 4. 야후 파이낸스 검색 (해외 종목)
+    # 5. 해외 주식 (야후 파이낸스)
     try:
-        headers = {'User-Agent': 'Mozilla/5.0'}
         res = requests.get(f"https://query2.finance.yahoo.com/v1/finance/search?q={query}", headers=headers, timeout=5).json()
         if res.get('quotes'): return res['quotes'][0]['symbol']
     except: pass
     
-    # 5. 마지막 수단: 대문자 티커 확인
-    if re.match(r'^[A-Z.=-]{1,10}$', query.upper()): return query.upper()
     return None
 
 # --- 4. Firestore CRUD ---
