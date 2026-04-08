@@ -192,7 +192,7 @@ col_list, col_chart = st.columns([3, 2])
 with col_list:
     st.subheader("💼 내 포트폴리오 관리")
     
-    # --- Requirement 2: 내 포트폴리오 등록 시 손절/익절가 기능 개선 ---
+    # --- 새 종목 등록 ---
     with st.expander("➕ 새 종목 등록 (손절/익절 설정 포함)"):
         c1, c2, c3 = st.columns(3)
         in_name = c1.text_input("종목명/티커", key="reg_name")
@@ -213,7 +213,7 @@ with col_list:
                     st.rerun()
 
     portfolio = get_portfolio_from_db()
-    display_data = [] # 에러 방지 초기화
+    display_data = []
     
     if portfolio:
         total_cost, total_eval = 0, 0
@@ -242,16 +242,20 @@ with col_list:
             tp1_price = buy * (1 + tp1_pct/100)
             tpf_price = buy * (1 + tpf_pct/100)
             
+            # 스타일 적용을 위한 데이터 구성
             display_data.append({
                 "종목": item.get('name', 'N/A'),
-                "현재가": f"{curr:,.0f}",
-                "수익률": f"{gain_pct:+.2f}%",
-                "수익금": f"{gain:,.0f}",
-                "손절가": f"{sl_price:,.0f} ({sl_pct}%)",
-                "1차목표": f"{tp1_price:,.0f} ({tp1_pct}%)",
-                "최종목표": f"{tpf_price:,.0f} ({tpf_pct}%)",
+                "현재가": curr,
+                "수익률": gain_pct,
+                "수익금": gain,
+                "손절가": sl_price,
+                "sl_pct": sl_pct,
+                "1차목표": tp1_price,
+                "tp1_pct": tp1_pct,
+                "최종목표": tpf_price,
+                "tpf_pct": tpf_pct,
                 "ID": item['id'],
-                "Raw": item # 수정 기능을 위해 원본 데이터 보관
+                "Raw": item
             })
             
         if display_data:
@@ -262,9 +266,43 @@ with col_list:
             s3.metric("누적 수익률", f"{total_pct:+.2f}%", f"{total_eval-total_cost:,.0f}원")
             
             df = pd.DataFrame(display_data)
-            st.dataframe(df.drop(columns=["ID", "Raw"]), use_container_width=True, hide_index=True)
+
+            # --- 테이블 스타일링 및 컬러 적용 ---
+            def style_portfolio(row):
+                # 수익/손실 컬러 (수익 빨강, 손실 파랑)
+                gain_val = row['수익금']
+                color = 'color: #ff4b4b;' if gain_val > 0 else 'color: #31333f;'
+                if gain_val < 0: color = 'color: #1c83e1;'
+                
+                styles = [''] * len(row)
+                styles[df.columns.get_loc("수익률")] = color
+                styles[df.columns.get_loc("수익금")] = color
+                # 손절가: 굵은 파랑
+                styles[df.columns.get_loc("손절가")] = 'color: #1c83e1; font-weight: bold;'
+                # 익절가: 굵은 녹색
+                styles[df.columns.get_loc("1차목표")] = 'color: #28a745; font-weight: bold;'
+                styles[df.columns.get_loc("최종목표")] = 'color: #28a745; font-weight: bold;'
+                return styles
+
+            # 화면 표시용 가공
+            styled_df = df.copy()
+            # 숫자 포맷팅
+            styled_df['현재가'] = styled_df['현재가'].apply(lambda x: f"{x:,.0f}")
+            styled_df['수익률'] = styled_df['수익률'].apply(lambda x: f"{x:+.2f}%")
+            styled_df['수익금'] = styled_df['수익금'].apply(lambda x: f"{x:,.0f}")
+            styled_df['손절가'] = styled_df.apply(lambda r: f"{r['손절가']:,.0f} ({r['sl_pct']}%)", axis=1)
+            styled_df['1차목표'] = styled_df.apply(lambda r: f"{r['1차목표']:,.0f} ({r['tp1_pct']}%)", axis=1)
+            styled_df['최종목표'] = styled_df.apply(lambda r: f"{r['최종목표']:,.0f} ({r['tpf_pct']}%)", axis=1)
+
+            # 스타일 적용 및 출력
+            st.dataframe(
+                styled_df.drop(columns=["ID", "Raw", "sl_pct", "tp1_pct", "tpf_pct"])
+                .style.apply(style_portfolio, axis=1),
+                use_container_width=True, 
+                hide_index=True
+            )
             
-            # --- 수정 및 삭제 기능 통합 ---
+            # --- 수정 및 삭제 기능 ---
             with st.expander("🛠️ 종목 정보 수정 및 삭제"):
                 selected_name = st.selectbox("수정/삭제할 종목 선택", df['종목'].tolist())
                 selected_item_raw = next(d['Raw'] for d in display_data if d['종목'] == selected_name)
@@ -316,7 +354,7 @@ with col_chart:
             p_pct = (sim_target / b_p - 1) * 100 if b_p > 0 else 0
             st.success(f"예상 수익금: **{p_gain:,.0f}원** ({p_pct:+.2f}%)")
 
-    # --- Requirement 3: 펀더멘털 및 벨류에이션 정보 추가 ---
+    # --- 펀더멘털 및 벨류에이션 ---
     st.write("---")
     st.write("📊 **펀더멘털 & 벨류에이션**")
     info = get_info_data(analysis_ticker)
