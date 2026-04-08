@@ -193,11 +193,21 @@ if db is not None:
             c4, c5, c6 = st.columns(3)
             sl_val = c4.number_input("손절가 (%)", value=float(target_data.get('sl', -10.0)) if target_data else -10.0)
             tp_val = c5.number_input("익절가 (%)", value=float(target_data.get('tp', 20.0)) if target_data else 20.0)
-            b_date = c6.date_input("매수일", value=target_data['buy_date'].date() if target_data else datetime.now())
+            
+            # 날짜 변환 로직 보완 (에러 방지)
+            def safe_to_date(val):
+                if isinstance(val, datetime): return val.date()
+                try: return pd.to_datetime(val).date()
+                except: return datetime.now().date()
+
+            b_date_val = safe_to_date(target_data['buy_date']) if target_data and 'buy_date' in target_data else datetime.now().date()
+            b_date = c6.date_input("매수일", value=b_date_val)
 
             c7, c8 = st.columns([1, 2])
-            # 신규 추가: 매도일 및 매매일지
-            s_date = c7.date_input("매도(예정)일", value=target_data.get('sell_date', datetime.now() + timedelta(days=30)).date() if target_data and 'sell_date' in target_data else datetime.now() + timedelta(days=30))
+            
+            s_date_val = safe_to_date(target_data.get('sell_date')) if target_data and 'sell_date' in target_data else (datetime.now() + timedelta(days=30)).date()
+            s_date = c7.date_input("매도(예정)일", value=s_date_val)
+            
             note = c8.text_area("📝 매매일지 / 메모", value=target_data.get('note', "") if target_data else "", placeholder="매수 근거, 전략 등을 기록하세요.", height=100)
             
             btn_col1, btn_col2 = st.columns(2)
@@ -233,13 +243,24 @@ if db is not None:
                 curr, _, _ = get_finance_data(item['ticker'])
                 profit_p = (curr / item['buy_price'] - 1) * 100 if item['buy_price'] > 0 else 0
                 
+                # 에러 발생 지점 수정: pd.to_datetime을 사용하여 데이터 타입 강제 변환
+                try:
+                    b_date_str = pd.to_datetime(item['buy_date']).strftime('%Y-%m-%d')
+                except:
+                    b_date_str = "-"
+                
+                try:
+                    s_date_str = pd.to_datetime(item.get('sell_date')).strftime('%Y-%m-%d') if 'sell_date' in item else "-"
+                except:
+                    s_date_str = "-"
+                
                 display_rows.append({
                     "종목": item['name'],
                     "평단가": item['buy_price'],
                     "현재가": curr,
                     "수익률": profit_p,
-                    "매수일": item['buy_date'].strftime('%Y-%m-%d'),
-                    "매도일": item.get('sell_date', datetime.now()).strftime('%Y-%m-%d') if 'sell_date' in item else "-",
+                    "매수일": b_date_str,
+                    "매도일": s_date_str,
                     "메모": "📝" if item.get('note') else ""
                 })
             
