@@ -171,7 +171,6 @@ indices_list = [
     ("KRW=X", "USD/KRW"), ("BTC-USD", "Bitcoin"), ("CL=F", "WTI Oil")
 ]
 
-# 상단 지표 차트 기간 선택
 top_period = st.radio("지표 차트 기간 선택", ["1d", "1mo", "1y"], index=1, horizontal=True)
 
 idx_cols = st.columns(len(indices_list))
@@ -179,20 +178,17 @@ for i, (ticker, name) in enumerate(indices_list):
     price, _, pct = get_finance_data(ticker)
     idx_cols[i].metric(name, f"{price:,.2f}", f"{pct:+.2f}%")
     
-    # 미니 차트 표시
     mini_df = get_chart_data(ticker, name, top_period)
     if not mini_df.empty:
         idx_cols[i].line_chart(mini_df, height=100)
 
 st.divider()
 
-# 좌측: 포트폴리오 관리 / 우측: 상세 차트
 col_list, col_chart = st.columns([3, 2])
 
 with col_list:
     st.subheader("💼 내 포트폴리오 관리")
     
-    # --- 새 종목 등록 ---
     with st.expander("➕ 새 종목 등록 (손절/익절 설정 포함)"):
         c1, c2, c3 = st.columns(3)
         in_name = c1.text_input("종목명/티커", key="reg_name")
@@ -237,12 +233,10 @@ with col_list:
             total_cost += cost
             total_eval += eval_v
             
-            # 목표 가격 계산
             sl_price = buy * (1 + sl_pct/100)
             tp1_price = buy * (1 + tp1_pct/100)
             tpf_price = buy * (1 + tpf_pct/100)
             
-            # 스타일 적용을 위한 데이터 구성
             display_data.append({
                 "종목": item.get('name', 'N/A'),
                 "현재가": curr,
@@ -267,12 +261,16 @@ with col_list:
             
             df = pd.DataFrame(display_data)
 
-            # --- 테이블 스타일링 및 컬러 적용 ---
+            # --- 테이블 스타일링 함수 (숫자형 데이터 기반) ---
             def style_portfolio(row):
-                # 수익/손실 컬러 (수익 빨강, 손실 파랑)
                 gain_val = row['수익금']
-                color = 'color: #ff4b4b;' if gain_val > 0 else 'color: #31333f;'
-                if gain_val < 0: color = 'color: #1c83e1;'
+                # 수익/손실 컬러 (수익 빨강, 손실 파랑)
+                if gain_val > 0:
+                    color = 'color: #ff4b4b;'
+                elif gain_val < 0:
+                    color = 'color: #1c83e1;'
+                else:
+                    color = 'color: #31333f;'
                 
                 styles = [''] * len(row)
                 styles[df.columns.get_loc("수익률")] = color
@@ -284,25 +282,23 @@ with col_list:
                 styles[df.columns.get_loc("최종목표")] = 'color: #28a745; font-weight: bold;'
                 return styles
 
-            # 화면 표시용 가공
-            styled_df = df.copy()
-            # 숫자 포맷팅
-            styled_df['현재가'] = styled_df['현재가'].apply(lambda x: f"{x:,.0f}")
-            styled_df['수익률'] = styled_df['수익률'].apply(lambda x: f"{x:+.2f}%")
-            styled_df['수익금'] = styled_df['수익금'].apply(lambda x: f"{x:,.0f}")
-            styled_df['손절가'] = styled_df.apply(lambda r: f"{r['손절가']:,.0f} ({r['sl_pct']}%)", axis=1)
-            styled_df['1차목표'] = styled_df.apply(lambda r: f"{r['1차목표']:,.0f} ({r['tp1_pct']}%)", axis=1)
-            styled_df['최종목표'] = styled_df.apply(lambda r: f"{r['최종목표']:,.0f} ({r['tpf_pct']}%)", axis=1)
-
-            # 스타일 적용 및 출력
+            # 스타일러 적용 및 포맷팅 일괄 처리
             st.dataframe(
-                styled_df.drop(columns=["ID", "Raw", "sl_pct", "tp1_pct", "tpf_pct"])
-                .style.apply(style_portfolio, axis=1),
+                df.drop(columns=["ID", "Raw", "sl_pct", "tp1_pct", "tpf_pct"])
+                .style.apply(style_portfolio, axis=1)
+                .format({
+                    "현재가": "{:,.0f}",
+                    "수익률": "{:+.2f}%",
+                    "수익금": "{:,.0f}"
+                })
+                # 복합 문자열 포맷팅이 필요한 컬럼은 별도 처리
+                .format(lambda val, row: f"{val:,.0f} ({row['sl_pct']}%)", subset=["손절가"])
+                .format(lambda val, row: f"{val:,.0f} ({row['tp1_pct']}%)", subset=["1차목표"])
+                .format(lambda val, row: f"{val:,.0f} ({row['tpf_pct']}%)", subset=["최종목표"]),
                 use_container_width=True, 
                 hide_index=True
             )
             
-            # --- 수정 및 삭제 기능 ---
             with st.expander("🛠️ 종목 정보 수정 및 삭제"):
                 selected_name = st.selectbox("수정/삭제할 종목 선택", df['종목'].tolist())
                 selected_item_raw = next(d['Raw'] for d in display_data if d['종목'] == selected_name)
@@ -335,13 +331,11 @@ with col_chart:
     analysis_name = st.selectbox("분석 종목", analysis_options)
     analysis_ticker = get_ticker_from_name(analysis_name)
     
-    # 차트
     period = st.select_slider("차트 기간", options=["1mo", "3mo", "6mo", "1y", "2y", "5y"], value="1mo")
     chart_df = get_chart_data(analysis_ticker, analysis_name, period)
     if not chart_df.empty:
         st.line_chart(chart_df)
 
-    # 시뮬레이션
     st.write("---")
     st.write("🧮 **수익 시뮬레이션**")
     sim_target = st.number_input("목표가 입력", value=0.0, step=100.0)
@@ -354,7 +348,6 @@ with col_chart:
             p_pct = (sim_target / b_p - 1) * 100 if b_p > 0 else 0
             st.success(f"예상 수익금: **{p_gain:,.0f}원** ({p_pct:+.2f}%)")
 
-    # --- 펀더멘털 및 벨류에이션 ---
     st.write("---")
     st.write("📊 **펀더멘털 & 벨류에이션**")
     info = get_info_data(analysis_ticker)
@@ -374,7 +367,6 @@ with col_chart:
     else:
         st.warning("이 종목의 상세 정보를 가져올 수 없습니다.")
 
-# 사이드바
 st.sidebar.title("System Info")
 if st.sidebar.button("♻️ DB 초기화 & 캐시삭제"):
     st.cache_resource.clear()
