@@ -23,13 +23,16 @@ def init_db():
     try:
         if "firebase" in st.secrets:
             raw_json = st.secrets["firebase"]["text_key"]
+            # JSON 클리닝 및 파싱
             try:
                 key_dict = json.loads(raw_json, strict=False)
             except json.JSONDecodeError:
+                # 제어 문자 제거 시도
                 fixed_json = re.sub(r'[\x00-\x1F\x7F]', '', raw_json)
                 key_dict = json.loads(fixed_json)
             
             if "private_key" in key_dict:
+                # 이스케이프된 줄바꿈 문자 처리
                 key_dict["private_key"] = key_dict["private_key"].replace("\\n", "\n").strip()
                 
             creds = service_account.Credentials.from_service_account_info(key_dict)
@@ -41,7 +44,8 @@ def init_db():
             return client
         return None
     except Exception as e:
-        st.error(f"DB 연결 오류: {e}")
+        # 오류 메시지를 화면에 잠시 노출 (디버깅용)
+        st.sidebar.error(f"DB 연결 실패: {e}")
         return None
 
 db = init_db()
@@ -75,12 +79,10 @@ def get_naver_ticker_info(code):
         # 1. 우측 섹션 (시가총액, 상장주식수 등)
         aside = soup.select_one(".aside")
         if aside:
-            # 시가총액
             market_cap_area = aside.select_one("#_market_sum")
             if market_cap_area:
                 fundamental['시가총액'] = market_cap_area.text.strip().replace("\t", "").replace("\n", "")
             
-            # 상장주식수
             stock_count_area = aside.select_one("th:-soup-contains('상장주식수')")
             if stock_count_area:
                 fundamental['상장주식수'] = stock_count_area.find_next_sibling("td").text.strip()
@@ -93,7 +95,6 @@ def get_naver_ticker_info(code):
                 td = tr.select_one("td")
                 if th and td:
                     label = th.get_text(strip=True)
-                    # 불필요한 텍스트 제거 및 값 추출
                     val = td.get_text(strip=True).replace(",", "").replace("배", "").replace("%", "")
                     if label in ['PER', 'PBR', 'ROE', '추정PER', 'EPS', 'BPS', '현금배당수익률']:
                         fundamental[label] = val
@@ -127,7 +128,6 @@ def get_chart_data(ticker, period="1개월"):
     p = period_map.get(period, "1mo")
     interval = "5m" if p == "1d" else "1d"
     
-    # 한국 종목인 경우 yfinance 호환을 위해 접미사 시도
     if re.match(r'^\d{6}$', ticker):
         for suffix in [".KS", ".KQ"]:
             try:
@@ -145,8 +145,6 @@ def validate_and_get_ticker(name):
     """한국 주식 검색 실패를 방지하는 획기적 개선 로직"""
     query = name.strip()
     if not query: return None
-    
-    # 1. 이미 6자리 숫자인 경우 즉시 반환
     if re.match(r'^\d{6}$', query): return query
     
     headers = {
@@ -154,7 +152,6 @@ def validate_and_get_ticker(name):
         'Referer': 'https://finance.naver.com/'
     }
 
-    # 2. 개선된 네이버 금융 자동완성 API
     try:
         ac_url = f"https://ac.finance.naver.com/ac?q={query}&st=111&r_format=json&t_koreng=1"
         res = requests.get(ac_url, headers=headers, timeout=5).json()
@@ -162,7 +159,6 @@ def validate_and_get_ticker(name):
             return res['items'][0][0][1]
     except: pass
 
-    # 3. 네이버 검색 결과 직접 파싱
     try:
         search_url = f"https://search.naver.com/search.naver?query={query}"
         res = requests.get(search_url, headers=headers, timeout=5)
@@ -172,7 +168,6 @@ def validate_and_get_ticker(name):
         if match: return match.group(1)
     except: pass
 
-    # 4. 야후 파이낸스 검색 (해외 종목)
     try:
         y_url = f"https://query2.finance.yahoo.com/v1/finance/search?q={query}"
         res = requests.get(y_url, headers=headers, timeout=5).json()
@@ -195,7 +190,10 @@ def db_action(action, doc_id=None, data=None):
 # --- 5. UI 구성 ---
 st.title("📊 Global Finance Dashboard V2.2")
 
-if db is not None:
+# DB 연결 상태 확인 후 렌더링
+if db is None:
+    st.error("⚠️ 데이터베이스 연결을 초기화할 수 없습니다. Secrets 설정을 확인해 주세요.")
+else:
     # --- 1. 상단 지표 ---
     st.subheader("🌐 글로벌 시장 주요 지표")
     idx_period = st.radio("지표 기간 선택", ["1일", "1개월", "1년"], index=1, horizontal=True, label_visibility="collapsed")
@@ -220,7 +218,12 @@ if db is not None:
 
     with col_left:
         st.subheader("💼 내 포트폴리오 관리")
-        portfolio_raw = [{"id": d.id, **d.to_dict()} for d in db.collection(COLLECTION_NAME).stream()]
+        # 데이터 스트리밍 안전 처리
+        try:
+            portfolio_raw = [{"id": d.id, **d.to_dict()} for d in db.collection(COLLECTION_NAME).stream()]
+        except Exception as e:
+            st.warning("데이터를 가져오는 중 오류가 발생했습니다.")
+            portfolio_raw = []
         
         with st.expander("➕ 종목 등록 / 📝 수정 / 🗑️ 삭제", expanded=False):
             edit_target = st.selectbox("수정할 종목 선택 (새 등록은 '신규 등록')", ["신규 등록"] + [p['name'] for p in portfolio_raw])
@@ -276,7 +279,7 @@ if db is not None:
             if target_data and btn_col2.button("삭제하기", use_container_width=True):
                 if db_action("delete", target_data['id']): st.rerun()
 
-        # 포트폴리오 목록
+        # 포트폴리오 목록 표시
         if portfolio_raw:
             display_rows = []
             for item in portfolio_raw:
@@ -310,7 +313,7 @@ if db is not None:
                 use_container_width=True, hide_index=True
             )
         else:
-            st.info("등록된 종목이 없습니다.")
+            st.info("등록된 종목이 없습니다. 위 익스팬더를 열어 종목을 추가해 보세요.")
 
     with col_right:
         st.subheader("🔍 종목 정밀 분석")
@@ -335,7 +338,6 @@ if db is not None:
                 if n_info and n_info['fundamental']:
                     f = n_info['fundamental']
                     
-                    # 펀더멘털 핵심 정보 (시가총액 등)
                     st.write(f"🏢 **기본 정보**")
                     st.caption(f"시가총액: {f.get('시가총액', 'N/A')} / 상장주식수: {f.get('상장주식수', 'N/A')}")
                     
@@ -348,8 +350,16 @@ if db is not None:
                     m4, m5, m6 = st.columns(3)
                     m4.metric("추정PER", f"{f.get('추정PER', 'N/A')}배")
                     m5.metric("배당수익률", f"{f.get('현금배당수익률', 'N/A')}%")
-                    m6.metric("BPS", f"{int(float(f.get('BPS', 0))):,}" if f.get('BPS') else "N/A")
+                    # BPS 변환 안전 처리
+                    bps_raw = f.get('BPS', '0')
+                    try:
+                        bps_val = int(float(bps_raw))
+                        m6.metric("BPS", f"{bps_val:,}")
+                    except:
+                        m6.metric("BPS", "N/A")
             else:
                 st.info("해외 종목 상세 지표 제한")
+        else:
+            st.info("포트폴리오에 종목을 먼저 등록해 주세요.")
 
 st.sidebar.button("♻️ 데이터 강제 갱신", on_click=lambda: st.cache_data.clear())
