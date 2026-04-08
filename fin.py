@@ -259,48 +259,51 @@ with col_list:
             total_pct = (total_eval/total_cost - 1)*100 if total_cost > 0 else 0
             s3.metric("누적 수익률", f"{total_pct:+.2f}%", f"{total_eval-total_cost:,.0f}원")
             
-            df = pd.DataFrame(display_data)
+            # --- 테이블 출력용 데이터프레임 생성 (불필요 컬럼 미리 제거) ---
+            full_df = pd.DataFrame(display_data)
+            df_to_show = full_df.drop(columns=["ID", "Raw", "sl_pct", "tp1_pct", "tpf_pct"])
 
-            # --- 테이블 스타일링 함수 (숫자형 데이터 기반) ---
+            # --- 테이블 스타일링 함수 ---
             def style_portfolio(row):
+                # row는 출력용 df의 행이므로, 컬럼명을 직접 사용하여 안전하게 접근
                 gain_val = row['수익금']
-                # 수익/손실 컬러 (수익 빨강, 손실 파랑)
                 if gain_val > 0:
-                    color = 'color: #ff4b4b;'
+                    gain_color = 'color: #ff4b4b;'
                 elif gain_val < 0:
-                    color = 'color: #1c83e1;'
+                    gain_color = 'color: #1c83e1;'
                 else:
-                    color = 'color: #31333f;'
+                    gain_color = 'color: #31333f;'
                 
+                # 각 셀별 스타일 정의
                 styles = [''] * len(row)
-                styles[df.columns.get_loc("수익률")] = color
-                styles[df.columns.get_loc("수익금")] = color
-                # 손절가: 굵은 파랑
-                styles[df.columns.get_loc("손절가")] = 'color: #1c83e1; font-weight: bold;'
-                # 익절가: 굵은 녹색
-                styles[df.columns.get_loc("1차목표")] = 'color: #28a745; font-weight: bold;'
-                styles[df.columns.get_loc("최종목표")] = 'color: #28a745; font-weight: bold;'
+                col_indices = {col: i for i, col in enumerate(row.index)}
+                
+                if "수익률" in col_indices: styles[col_indices["수익률"]] = gain_color
+                if "수익금" in col_indices: styles[col_indices["수익금"]] = gain_color
+                if "손절가" in col_indices: styles[col_indices["손절가"]] = 'color: #1c83e1; font-weight: bold;'
+                if "1차목표" in col_indices: styles[col_indices["1차목표"]] = 'color: #28a745; font-weight: bold;'
+                if "최종목표" in col_indices: styles[col_indices["최종목표"]] = 'color: #28a745; font-weight: bold;'
+                
                 return styles
 
-            # 스타일러 적용 및 포맷팅 일괄 처리
+            # 스타일러 적용
             st.dataframe(
-                df.drop(columns=["ID", "Raw", "sl_pct", "tp1_pct", "tpf_pct"])
-                .style.apply(style_portfolio, axis=1)
+                df_to_show.style.apply(style_portfolio, axis=1)
                 .format({
                     "현재가": "{:,.0f}",
                     "수익률": "{:+.2f}%",
                     "수익금": "{:,.0f}"
                 })
-                # 복합 문자열 포맷팅이 필요한 컬럼은 별도 처리
-                .format(lambda val, row: f"{val:,.0f} ({row['sl_pct']}%)", subset=["손절가"])
-                .format(lambda val, row: f"{val:,.0f} ({row['tp1_pct']}%)", subset=["1차목표"])
-                .format(lambda val, row: f"{val:,.0f} ({row['tpf_pct']}%)", subset=["최종목표"]),
+                # 복합 문자열 포맷팅 (원본 full_df의 데이터를 참조)
+                .format(lambda val: f"{val:,.0f} ({full_df.loc[full_df['손절가'] == val, 'sl_pct'].values[0]:.0f}%)", subset=["손절가"])
+                .format(lambda val: f"{val:,.0f} ({full_df.loc[full_df['1차목표'] == val, 'tp1_pct'].values[0]:.0f}%)", subset=["1차목표"])
+                .format(lambda val: f"{val:,.0f} ({full_df.loc[full_df['최종목표'] == val, 'tpf_pct'].values[0]:.0f}%)", subset=["최종목표"]),
                 use_container_width=True, 
                 hide_index=True
             )
             
             with st.expander("🛠️ 종목 정보 수정 및 삭제"):
-                selected_name = st.selectbox("수정/삭제할 종목 선택", df['종목'].tolist())
+                selected_name = st.selectbox("수정/삭제할 종목 선택", full_df['종목'].tolist())
                 selected_item_raw = next(d['Raw'] for d in display_data if d['종목'] == selected_name)
                 
                 edit_col1, edit_col2 = st.columns(2)
