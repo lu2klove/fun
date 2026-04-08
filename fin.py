@@ -8,7 +8,7 @@ import json
 
 # --- 1. 페이지 설정 ---
 st.set_page_config(
-    page_title="Global Financial Dashboard V1.1",
+    page_title="Global Financial Dashboard V1.2",
     page_icon="📈",
     layout="wide"
 )
@@ -58,7 +58,7 @@ def get_portfolio_from_db():
         st.warning(f"데이터 로드 오류: {e}")
         return []
 
-def add_to_portfolio(name, ticker, buy_price, quantity, stop_loss_pct, take_profit_1, take_profit_final):
+def add_to_portfolio(name, ticker, buy_price, quantity, stop_loss_pct, tp1_pct, tp_f_pct, buy_date, trading_log):
     if db is None: return False
     try:
         db.collection(COLLECTION_NAME).add({
@@ -67,8 +67,10 @@ def add_to_portfolio(name, ticker, buy_price, quantity, stop_loss_pct, take_prof
             "buy_price": float(buy_price), 
             "quantity": int(quantity),
             "stop_loss_pct": float(stop_loss_pct),
-            "tp1_pct": float(take_profit_1),
-            "tp_final_pct": float(take_profit_final),
+            "tp1_pct": float(tp1_pct),
+            "tp_final_pct": float(tp_f_pct),
+            "buy_date": datetime.combine(buy_date, datetime.min.time()),
+            "trading_log": trading_log,
             "created_at": datetime.now()
         })
         return True
@@ -76,7 +78,7 @@ def add_to_portfolio(name, ticker, buy_price, quantity, stop_loss_pct, take_prof
         st.error(f"저장 오류: {e}")
         return False
 
-def update_portfolio(doc_id, buy_price, quantity, sl_pct, tp1_pct, tpf_pct):
+def update_portfolio(doc_id, buy_price, quantity, sl_pct, tp1_pct, tpf_pct, buy_date, trading_log):
     if db is None: return False
     try:
         db.collection(COLLECTION_NAME).document(doc_id).update({
@@ -85,6 +87,8 @@ def update_portfolio(doc_id, buy_price, quantity, sl_pct, tp1_pct, tpf_pct):
             "stop_loss_pct": float(sl_pct),
             "tp1_pct": float(tp1_pct),
             "tp_final_pct": float(tpf_pct),
+            "buy_date": datetime.combine(buy_date, datetime.min.time()),
+            "trading_log": trading_log,
             "updated_at": datetime.now()
         })
         return True
@@ -161,7 +165,7 @@ def get_ticker_from_name(name):
 
 # --- 6. UI 구성 ---
 st.title("📊 글로벌 경제 통합 대시보드")
-st.caption(f"버전: 2026-04-08 V1.1 (Final) | DB: richfin | {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+st.caption(f"버전: 2026-04-08 V1.2 | DB: richfin | {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
 # --- Requirement 1: 최상단 주가 지표 확장 및 기간별 차트 ---
 st.subheader("🌐 주요 시장 지표")
@@ -189,11 +193,14 @@ col_list, col_chart = st.columns([3, 2])
 with col_list:
     st.subheader("💼 내 포트폴리오 관리")
     
-    with st.expander("➕ 새 종목 등록 (손절/익절 설정 포함)"):
+    with st.expander("➕ 새 종목 등록 (매입 정보 및 매매일지 포함)"):
         c1, c2, c3 = st.columns(3)
         in_name = c1.text_input("종목명/티커", key="reg_name")
         in_buy = c2.number_input("평단가", min_value=0.0, key="reg_buy")
         in_qty = c3.number_input("수량", min_value=0, key="reg_qty")
+        
+        c4, c5 = st.columns([1, 2])
+        in_date = c4.date_input("매수일자", value=datetime.now())
         
         st.write("**익절/손절 목표 설정 (%)**")
         cc1, cc2, cc3 = st.columns(3)
@@ -201,10 +208,12 @@ with col_list:
         in_tp1 = cc2.number_input("1차 익절 (%)", value=50.0, step=5.0)
         in_tp_f = cc3.number_input("최종 익절 (%)", value=100.0, step=10.0)
         
+        in_log = st.text_area("매매일지 (투자 이유 및 전략)", placeholder="예: 엔비디아 실적 발표 전 선취매, AI 수요 지속 전망...")
+        
         if st.button("포트폴리오에 등록", use_container_width=True):
             if in_name and in_buy > 0:
                 ticker = get_ticker_from_name(in_name)
-                if add_to_portfolio(in_name, ticker, in_buy, in_qty, in_sl, in_tp1, in_tp_f):
+                if add_to_portfolio(in_name, ticker, in_buy, in_qty, in_sl, in_tp1, in_tp_f, in_date, in_log):
                     st.success(f"'{in_name}' 등록 완료!")
                     st.rerun()
 
@@ -237,9 +246,13 @@ with col_list:
             tp1_price = buy * (1 + tp1_pct/100)
             tpf_price = buy * (1 + tpf_pct/100)
             
+            # DB에서 매수일자 가져오기 (없을 경우 생성일자)
+            b_date = item.get('buy_date', item.get('created_at', datetime.now()))
+            if isinstance(b_date, datetime): b_date = b_date.date()
+            
             display_data.append({
                 "종목": item.get('name', 'N/A'),
-                "현재가": curr,
+                "평단가": buy, # 현재가에서 평단가로 변경
                 "수익률": gain_pct,
                 "수익금": gain,
                 "손절가": sl_price,
@@ -248,6 +261,7 @@ with col_list:
                 "tp1_pct": tp1_pct,
                 "최종목표": tpf_price,
                 "tpf_pct": tpf_pct,
+                "매수일": b_date.strftime("%Y-%m-%d"),
                 "ID": item['id'],
                 "Raw": item
             })
@@ -259,13 +273,12 @@ with col_list:
             total_pct = (total_eval/total_cost - 1)*100 if total_cost > 0 else 0
             s3.metric("누적 수익률", f"{total_pct:+.2f}%", f"{total_eval-total_cost:,.0f}원")
             
-            # --- 테이블 출력용 데이터프레임 생성 (불필요 컬럼 미리 제거) ---
+            # --- 테이블 출력용 데이터프레임 생성 ---
             full_df = pd.DataFrame(display_data)
             df_to_show = full_df.drop(columns=["ID", "Raw", "sl_pct", "tp1_pct", "tpf_pct"])
 
             # --- 테이블 스타일링 함수 ---
             def style_portfolio(row):
-                # row는 출력용 df의 행이므로, 컬럼명을 직접 사용하여 안전하게 접근
                 gain_val = row['수익금']
                 if gain_val > 0:
                     gain_color = 'color: #ff4b4b;'
@@ -274,7 +287,6 @@ with col_list:
                 else:
                     gain_color = 'color: #31333f;'
                 
-                # 각 셀별 스타일 정의
                 styles = [''] * len(row)
                 col_indices = {col: i for i, col in enumerate(row.index)}
                 
@@ -290,11 +302,10 @@ with col_list:
             st.dataframe(
                 df_to_show.style.apply(style_portfolio, axis=1)
                 .format({
-                    "현재가": "{:,.0f}",
+                    "평단가": "{:,.0f}",
                     "수익률": "{:+.2f}%",
                     "수익금": "{:,.0f}"
                 })
-                # 복합 문자열 포맷팅 (원본 full_df의 데이터를 참조)
                 .format(lambda val: f"{val:,.0f} ({full_df.loc[full_df['손절가'] == val, 'sl_pct'].values[0]:.0f}%)", subset=["손절가"])
                 .format(lambda val: f"{val:,.0f} ({full_df.loc[full_df['1차목표'] == val, 'tp1_pct'].values[0]:.0f}%)", subset=["1차목표"])
                 .format(lambda val: f"{val:,.0f} ({full_df.loc[full_df['최종목표'] == val, 'tpf_pct'].values[0]:.0f}%)", subset=["최종목표"]),
@@ -302,22 +313,30 @@ with col_list:
                 hide_index=True
             )
             
-            with st.expander("🛠️ 종목 정보 수정 및 삭제"):
+            with st.expander("🛠️ 종목 정보 수정 / 매매일지 확인 / 삭제"):
                 selected_name = st.selectbox("수정/삭제할 종목 선택", full_df['종목'].tolist())
                 selected_item_raw = next(d['Raw'] for d in display_data if d['종목'] == selected_name)
                 
-                edit_col1, edit_col2 = st.columns(2)
+                edit_col1, edit_col2, edit_col3 = st.columns([1, 1, 1])
                 new_buy = edit_col1.number_input("수정 평단가", value=float(selected_item_raw.get('buy_price', 0)))
                 new_qty = edit_col2.number_input("수정 수량", value=int(selected_item_raw.get('quantity', 0)))
+                
+                # 날짜 처리
+                existing_date = selected_item_raw.get('buy_date', datetime.now())
+                if not isinstance(existing_date, datetime): 
+                    existing_date = datetime.now() # 예외 방지
+                new_buy_date = edit_col3.date_input("수정 매수일", value=existing_date)
                 
                 edit_sl_col, edit_tp1_col, edit_tpf_col = st.columns(3)
                 new_sl = edit_sl_col.number_input("수정 손절 (%)", value=float(selected_item_raw.get('stop_loss_pct', -10)))
                 new_tp1 = edit_tp1_col.number_input("수정 1차익절 (%)", value=float(selected_item_raw.get('tp1_pct', 50)))
                 new_tpf = edit_tpf_col.number_input("수정 최종익절 (%)", value=float(selected_item_raw.get('tp_final_pct', 100)))
                 
+                new_log = st.text_area("매매일지 수정", value=selected_item_raw.get('trading_log', ''))
+                
                 btn_edit, btn_del = st.columns(2)
                 if btn_edit.button("💾 변경사항 저장", use_container_width=True):
-                    if update_portfolio(selected_item_raw['id'], new_buy, new_qty, new_sl, new_tp1, new_tpf):
+                    if update_portfolio(selected_item_raw['id'], new_buy, new_qty, new_sl, new_tp1, new_tpf, new_buy_date, new_log):
                         st.success("수정되었습니다.")
                         st.rerun()
                 
@@ -334,6 +353,12 @@ with col_chart:
     analysis_name = st.selectbox("분석 종목", analysis_options)
     analysis_ticker = get_ticker_from_name(analysis_name)
     
+    # 해당 종목의 매매일지 보여주기
+    if portfolio:
+        selected_raw = next((item for item in portfolio if item.get('name') == analysis_name), None)
+        if selected_raw and selected_raw.get('trading_log'):
+            st.info(f"📝 **매매일지:** {selected_raw.get('trading_log')}")
+
     period = st.select_slider("차트 기간", options=["1mo", "3mo", "6mo", "1y", "2y", "5y"], value="1mo")
     chart_df = get_chart_data(analysis_ticker, analysis_name, period)
     if not chart_df.empty:
@@ -376,4 +401,4 @@ if st.sidebar.button("♻️ DB 초기화 & 캐시삭제"):
     st.cache_data.clear()
     st.rerun()
 
-st.sidebar.info(f"Connected: richfin\nVersion: V1.1")
+st.sidebar.info(f"Connected: richfin\nVersion: V1.2")
