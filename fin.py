@@ -76,6 +76,22 @@ def add_to_portfolio(name, ticker, buy_price, quantity, stop_loss_pct, take_prof
         st.error(f"저장 오류: {e}")
         return False
 
+def update_portfolio(doc_id, buy_price, quantity, sl_pct, tp1_pct, tpf_pct):
+    if db is None: return False
+    try:
+        db.collection(COLLECTION_NAME).document(doc_id).update({
+            "buy_price": float(buy_price),
+            "quantity": int(quantity),
+            "stop_loss_pct": float(sl_pct),
+            "tp1_pct": float(tp1_pct),
+            "tp_final_pct": float(tpf_pct),
+            "updated_at": datetime.now()
+        })
+        return True
+    except Exception as e:
+        st.error(f"수정 오류: {e}")
+        return False
+
 def delete_from_portfolio(doc_id):
     if db:
         try:
@@ -197,8 +213,9 @@ with col_list:
                     st.rerun()
 
     portfolio = get_portfolio_from_db()
+    display_data = [] # 에러 방지 초기화
+    
     if portfolio:
-        display_data = []
         total_cost, total_eval = 0, 0
         
         for item in portfolio:
@@ -233,7 +250,8 @@ with col_list:
                 "손절가": f"{sl_price:,.0f} ({sl_pct}%)",
                 "1차목표": f"{tp1_price:,.0f} ({tp1_pct}%)",
                 "최종목표": f"{tpf_price:,.0f} ({tpf_pct}%)",
-                "ID": item['id']
+                "ID": item['id'],
+                "Raw": item # 수정 기능을 위해 원본 데이터 보관
             })
             
         if display_data:
@@ -244,13 +262,32 @@ with col_list:
             s3.metric("누적 수익률", f"{total_pct:+.2f}%", f"{total_eval-total_cost:,.0f}원")
             
             df = pd.DataFrame(display_data)
-            st.dataframe(df.drop(columns="ID"), use_container_width=True, hide_index=True)
+            st.dataframe(df.drop(columns=["ID", "Raw"]), use_container_width=True, hide_index=True)
             
-            with st.expander("🗑️ 종목 삭제"):
-                target = st.selectbox("삭제할 종목 선택", df['종목'].tolist())
-                if st.button("삭제 확정"):
-                    doc_id = df[df['종목'] == target]['ID'].values[0]
-                    if delete_from_portfolio(doc_id): st.rerun()
+            # --- 수정 및 삭제 기능 통합 ---
+            with st.expander("🛠️ 종목 정보 수정 및 삭제"):
+                selected_name = st.selectbox("수정/삭제할 종목 선택", df['종목'].tolist())
+                selected_item_raw = next(d['Raw'] for d in display_data if d['종목'] == selected_name)
+                
+                edit_col1, edit_col2 = st.columns(2)
+                new_buy = edit_col1.number_input("수정 평단가", value=float(selected_item_raw.get('buy_price', 0)))
+                new_qty = edit_col2.number_input("수정 수량", value=int(selected_item_raw.get('quantity', 0)))
+                
+                edit_sl_col, edit_tp1_col, edit_tpf_col = st.columns(3)
+                new_sl = edit_sl_col.number_input("수정 손절 (%)", value=float(selected_item_raw.get('stop_loss_pct', -10)))
+                new_tp1 = edit_tp1_col.number_input("수정 1차익절 (%)", value=float(selected_item_raw.get('tp1_pct', 50)))
+                new_tpf = edit_tpf_col.number_input("수정 최종익절 (%)", value=float(selected_item_raw.get('tp_final_pct', 100)))
+                
+                btn_edit, btn_del = st.columns(2)
+                if btn_edit.button("💾 변경사항 저장", use_container_width=True):
+                    if update_portfolio(selected_item_raw['id'], new_buy, new_qty, new_sl, new_tp1, new_tpf):
+                        st.success("수정되었습니다.")
+                        st.rerun()
+                
+                if btn_del.button("🗑️ 종목 삭제", use_container_width=True, type="secondary"):
+                    if delete_from_portfolio(selected_item_raw['id']):
+                        st.warning("삭제되었습니다.")
+                        st.rerun()
     else:
         st.info("포트폴리오가 비어있습니다. 종목을 추가해 주세요.")
 
