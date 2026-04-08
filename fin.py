@@ -126,7 +126,9 @@ def get_finance_data(ticker):
 def get_chart_data(ticker, name, period="1mo"):
     try:
         yt = yf.Ticker(ticker)
-        data = yt.history(period=period)
+        # 1d 기간일 때는 정밀한 분봉 데이터(1m 또는 5m)를 가져오기 위해 interval 설정 가능
+        interval = "5m" if period == "1d" else "1d"
+        data = yt.history(period=period, interval=interval)
         if not data.empty:
             df = data[['Close']].copy()
             df.columns = [name]
@@ -141,14 +143,7 @@ def get_info_data(ticker):
         yt = yf.Ticker(ticker)
         info = yt.info
         if not info or len(info) < 5: return None
-        return {
-            "marketCap": info.get('marketCap') or info.get('totalAssets') or 0,
-            "forwardPE": info.get('forwardPE') or info.get('trailingPE') or 0,
-            "priceToBook": info.get('priceToBook') or 0,
-            "dividendYield": info.get('dividendYield') or 0,
-            "returnOnEquity": info.get('returnOnEquity') or 0,
-            "longBusinessSummary": info.get('longBusinessSummary') or '정보 없음'
-        }
+        return info # 전체 정보 반환하여 최대한 활용
     except:
         return None
 
@@ -177,7 +172,7 @@ def get_ticker_from_name(name):
 
 # --- 6. UI 구성 ---
 st.title("📊 글로벌 경제 통합 대시보드")
-st.caption(f"버전: 2026-04-08 V1.2 | DB: richfin | {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+st.caption(f"버전: 2026-04-08 V1.3 | DB: richfin | {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
 if db is None:
     st.error("❌ Firestore 연결에 실패했습니다.")
@@ -190,9 +185,8 @@ else:
         ("KRW=X", "USD/KRW"), ("BTC-USD", "Bitcoin"), ("CL=F", "WTI Oil")
     ]
     
-    top_period = st.radio("차트 기간", ["1d", "1mo", "1y"], index=1, horizontal=True)
+    top_period = st.radio("시장 지표 차트 기간", ["1d", "1mo", "1y"], index=1, horizontal=True, key="top_chart_period")
     
-    # 7개 지표를 표시하기 위해 컬럼 생성
     idx_cols = st.columns(len(indices_list))
     for i, (ticker, name) in enumerate(indices_list):
         p, _, pct = get_finance_data(ticker)
@@ -272,25 +266,17 @@ else:
             full_df = pd.DataFrame(display_data)
             df_to_show = full_df.drop(columns=["ID", "Raw"])
 
-            # --- 테이블 스타일링 함수 ---
             def apply_custom_style(row):
                 styles = [''] * len(row)
                 col_map = {col: i for i, col in enumerate(row.index)}
-                
-                # 수익률/수익금 색상
                 gain_val = row['수익률']
                 color = 'color: #ff4b4b;' if gain_val > 0 else ('color: #1c83e1;' if gain_val < 0 else '')
                 if '수익률' in col_map: styles[col_map['수익률']] = color
                 if '수익금' in col_map: styles[col_map['수익금']] = color
-                
-                # 손절가: 굵은 파란색
                 if '손절가' in col_map: styles[col_map['손절가']] = 'color: #1c83e1; font-weight: bold;'
-                
-                # 익절 목표: 굵은 녹색
                 green_bold = 'color: #28a745; font-weight: bold;'
                 if '1차목표' in col_map: styles[col_map['1차목표']] = green_bold
                 if '최종목표' in col_map: styles[col_map['최종목표']] = green_bold
-                
                 return styles
 
             st.dataframe(
@@ -334,25 +320,58 @@ else:
 
     with col_chart:
         st.subheader("🔍 종목 심층 분석")
-        analysis_options = [d['종목'] for d in display_data] if display_data else ["삼성전자", "AAPL", "NVDA"]
-        analysis_name = st.selectbox("분석 종목", analysis_options)
+        analysis_options = [d['종목'] for d in display_data] if display_data else ["삼성전자", "애플", "엔비디아"]
+        analysis_name = st.selectbox("분석 종목 선택", analysis_options)
         analysis_ticker = get_ticker_from_name(analysis_name)
         
-        st.write(f"**티커:** `{analysis_ticker}`")
+        # 차트 기간 선택 (년/월/일)
+        chart_period = st.segmented_control("분석 차트 기간", ["1d", "1mo", "1y"], default="1mo")
         
-        st.write("📊 **펀더멘털**")
+        st.write(f"📌 **티커:** `{analysis_ticker}`")
+        
+        # 데이터 시각화
+        chart_df = get_chart_data(analysis_ticker, analysis_name, chart_period)
+        if not chart_df.empty: 
+            st.line_chart(chart_df)
+        
+        st.markdown("---")
+        st.write("🏛️ **상세 펀더멘털 및 가치 지표**")
         info = get_info_data(analysis_ticker)
         if info:
-            f1, f2 = st.columns(2)
-            f1.metric("시가총액", f"{info['marketCap']/10**8:,.1f} 억")
-            f1.metric("PBR", f"{info['priceToBook']:.2f}")
-            f2.metric("ROE", f"{info['returnOnEquity']*100:.2f}%" if info['returnOnEquity'] else "-")
-            f2.metric("배당수익률", f"{info['dividendYield']*100:.2f}%" if info['dividendYield'] else "-")
-            with st.expander("기업 개요"): st.write(info['longBusinessSummary'])
+            # 주요 요약 지표 (4열)
+            m1, m2, m3, m4 = st.columns(4)
+            m1.metric("현재가", f"{info.get('currentPrice', 0):,.2f}")
+            m2.metric("PER(Fwd)", f"{info.get('forwardPE', 0):.2f}")
+            m3.metric("PBR", f"{info.get('priceToBook', 0):.2f}")
+            m4.metric("배당수익률", f"{info.get('dividendYield', 0)*100:.2f}%" if info.get('dividendYield') else "-")
+            
+            # 가치 지표 확장 테이블
+            with st.expander("📝 전체 지표 리스트 (상세)", expanded=True):
+                fund_data = {
+                    "항목": [
+                        "시가총액", "PSR (Price/Sales)", "EV/EBITDA", "ROE (자기자본이익률)", 
+                        "부채비율 (Debt/Equity)", "매출 성장률 (YoY)", "주당순이익 (EPS)", 
+                        "영업이익률", "보유현금", "52주 최고가", "52주 최저가"
+                    ],
+                    "값": [
+                        f"{info.get('marketCap', 0)/10**8:,.1f} 억" if info.get('marketCap') else "-",
+                        f"{info.get('priceToSalesTrailing12Months', 0):.2f}" if info.get('priceToSalesTrailing12Months') else "-",
+                        f"{info.get('enterpriseToEbitda', 0):.2f}" if info.get('enterpriseToEbitda') else "-",
+                        f"{info.get('returnOnEquity', 0)*100:.2f}%" if info.get('returnOnEquity') else "-",
+                        f"{info.get('debtToEquity', 0):.2f}" if info.get('debtToEquity') else "-",
+                        f"{info.get('revenueGrowth', 0)*100:.2f}%" if info.get('revenueGrowth') else "-",
+                        f"{info.get('trailingEps', 0):.2f}" if info.get('trailingEps') else "-",
+                        f"{info.get('operatingMargins', 0)*100:.2f}%" if info.get('operatingMargins') else "-",
+                        f"{info.get('totalCash', 0)/10**8:,.1f} 억" if info.get('totalCash') else "-",
+                        f"{info.get('fiftyTwoWeekHigh', 0):,.2f}",
+                        f"{info.get('fiftyTwoWeekLow', 0):,.2f}"
+                    ]
+                }
+                st.table(pd.DataFrame(fund_data))
+            
+            with st.expander("🏢 기업 상세 개요"): 
+                st.write(info.get('longBusinessSummary', '정보가 없습니다.'))
         else:
-            st.warning("데이터 부족")
-        
-        chart_df = get_chart_data(analysis_ticker, analysis_name, "1mo")
-        if not chart_df.empty: st.line_chart(chart_df)
+            st.warning("이 종목의 상세 펀더멘털 데이터를 불러올 수 없습니다.")
 
-st.sidebar.button("♻️ 초기화", on_click=lambda: (st.cache_resource.clear(), st.cache_data.clear()))
+st.sidebar.button("♻️ 데이터 초기화", on_click=lambda: (st.cache_resource.clear(), st.cache_data.clear()))
