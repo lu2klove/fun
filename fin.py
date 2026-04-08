@@ -20,40 +20,47 @@ def init_db():
     try:
         # Streamlit secrets에서 설정 가져오기
         if "firebase" in st.secrets:
-            raw_json = st.secrets["firebase"]["text_key"]
+            # 케이스 1: text_key 전체 JSON이 들어온 경우
+            if "text_key" in st.secrets["firebase"]:
+                raw_json = st.secrets["firebase"]["text_key"]
+                
+                # [개행 처리 강화] 이중 역슬래시와 실제 줄바꿈 혼용 해결
+                processed_json = raw_json.replace("\\\\n", "\n").replace("\\n", "\n")
+                
+                try:
+                    key_dict = json.loads(processed_json, strict=False)
+                except json.JSONDecodeError:
+                    cleaned_json = processed_json.replace('\n', '\\n').replace('\r', '\\r')
+                    key_dict = json.loads(cleaned_json, strict=False)
+                
+                # private_key 내부 문자열 재정제
+                if "private_key" in key_dict:
+                    key_dict["private_key"] = key_dict["private_key"].replace("\\n", "\n").strip()
+                
+                creds = service_account.Credentials.from_service_account_info(key_dict)
             
-            # --- [수정 포인트] JSON 파싱 전 원시 문자열 단계에서 개행 처리 ---
-            # r"\\n" (텍스트 그대로의 \n)을 실제 줄바꿈 문자 "\n"으로 변경
-            # 일부 OS나 편집기 환경에서 발생하는 이중 이스케이프 문제를 해결합니다.
-            processed_json = raw_json.replace("\\\\n", "\n").replace("\\n", "\n")
-            
-            try:
-                # 1. 정제된 문자열로 JSON 로드
-                key_dict = json.loads(processed_json, strict=False)
-            except json.JSONDecodeError:
-                # 2. 실패 시 제어 문자 클리닝 후 재시도
-                cleaned_json = processed_json.replace('\n', '\\n').replace('\r', '\\r')
-                key_dict = json.loads(cleaned_json, strict=False)
+            # 케이스 2: 항목별로 secrets에 직접 입력한 경우 (대체 경로)
+            else:
+                fb_secrets = st.secrets["firebase"]
+                key_dict = {
+                    "project_id": fb_secrets["project_id"],
+                    "private_key": fb_secrets["private_key"].replace("\\n", "\n").strip(),
+                    "client_email": fb_secrets["client_email"],
+                    "token_uri": "https://oauth2.googleapis.com/token",
+                }
+                creds = service_account.Credentials.from_service_account_info(key_dict)
 
-            # --- PEM 파일 로드 오류(InvalidByte) 해결을 위한 최종 검증 ---
-            if "private_key" in key_dict:
-                pk = key_dict["private_key"]
-                # 다시 한번 pk 내부의 문자열을 정제 (불필요한 공백 제거)
-                key_dict["private_key"] = pk.strip()
-
-            creds = service_account.Credentials.from_service_account_info(key_dict)
-            client = firestore.Client(credentials=creds, project=key_dict['project_id'])
+            client = firestore.Client(credentials=creds, project=key_dict.get('project_id'))
             return client
         else:
             st.error("Secrets 설정에서 'firebase' 정보를 찾을 수 없습니다.")
             return None
     except Exception as e:
         st.error(f"DB 연결 중 오류 발생: {e}")
-        st.info("💡 **여전히 오류가 발생한다면?**")
+        st.info("💡 **여전히 'InvalidData' 오류가 발생한다면?**")
         st.markdown("""
-        1. Google Cloud 콘솔에서 다운로드한 **JSON 파일**을 메모장으로 여세요.
-        2. "private_key" 항목의 값(-----BEGIN...부터 ...END-----\\n까지)만 따로 복사하세요.
-        3. 아래와 같이 `secrets.toml`에 직접 입력해 보세요:
+        `secrets.toml` 설정을 다음과 같이 **항목별 입력 방식**으로 변경해 보세요. 이 방식이 가장 확실합니다.
+        
         ```toml
         [firebase]
         project_id = "당신의_프로젝트_ID"
