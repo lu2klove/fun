@@ -46,10 +46,14 @@ def add_to_portfolio(name, ticker, buy_price, quantity):
             "quantity": quantity, 
             "created_at": datetime.now()
         })
+        return True
+    return False
 
 def delete_from_portfolio(doc_id):
     if db:
         db.collection(COLLECTION_NAME).document(doc_id).delete()
+        return True
+    return False
 
 # --- 4. 데이터 수집 함수 ---
 @st.cache_data(ttl=60)
@@ -124,7 +128,7 @@ with col_right:
 
 st.divider()
 
-# 2. 보유 종목 포트폴리오 관리 (새로 추가된 섹션)
+# 2. 보유 종목 포트폴리오 관리
 st.subheader("💼 내 보유 종목 포트폴리오 관리")
 
 with st.expander("➕ 새 종목 등록하기", expanded=False):
@@ -132,10 +136,12 @@ with st.expander("➕ 새 종목 등록하기", expanded=False):
     in_name = c1.text_input("종목명 (또는 티커)")
     in_buy = c2.number_input("평단가", min_value=0.0, step=100.0)
     in_qty = c3.number_input("수량", min_value=0, step=1)
-    if c4.button("등록") and in_name and in_buy > 0:
-        add_to_portfolio(in_name, get_ticker_from_name(in_name), in_buy, in_qty)
-        st.success(f"{in_name} 등록 완료!")
-        st.rerun()
+    # 버튼 클릭 시 즉시 로직 실행 후 rerun 호출
+    if c4.button("등록"):
+        if in_name and in_buy > 0:
+            if add_to_portfolio(in_name, get_ticker_from_name(in_name), in_buy, in_qty):
+                st.success(f"{in_name} 등록 완료!")
+                st.rerun()
 
 portfolio = get_portfolio_from_db()
 if portfolio:
@@ -179,8 +185,8 @@ if portfolio:
     target = del_col1.selectbox("삭제할 종목 선택", df_p['종목'].tolist())
     if del_col2.button("선택 삭제"):
         doc_id = df_p[df_p['종목'] == target]['ID'].values[0]
-        delete_from_portfolio(doc_id)
-        st.rerun()
+        if delete_from_portfolio(doc_id):
+            st.rerun()
 else:
     st.info("등록된 종목이 없습니다. 위 '새 종목 등록하기'를 이용해 보세요.")
 
@@ -231,5 +237,7 @@ with calc_col2:
         st.info("종목명과 투자 정보를 입력하면 가이드와 상세 지표가 표시됩니다.")
 
 # 사이드바
-st.sidebar.button("새로고침", on_click=lambda: st.rerun())
+# on_click 콜백 대신 버튼 클릭을 직접 확인하여 rerun 호출
+if st.sidebar.button("새로고침"):
+    st.rerun()
 st.sidebar.info("Firestore DB에 안전하게 저장됩니다.")
