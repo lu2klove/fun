@@ -13,16 +13,21 @@ st.set_page_config(
     layout="wide"
 )
 
-# --- 2. Firestore 데이터베이스 초기화 ---
+# --- 2. Firestore 데이터베이스 초기화 및 인증 ---
 @st.cache_resource
 def init_db():
     try:
+        # Streamlit secrets에서 설정 가져오기
         if "firebase" in st.secrets:
             key_dict = json.loads(st.secrets["firebase"]["text_key"])
             creds = service_account.Credentials.from_service_account_info(key_dict)
-            return firestore.Client(credentials=creds, project=key_dict['project_id'])
-        return None
-    except Exception:
+            client = firestore.Client(credentials=creds, project=key_dict['project_id'])
+            return client
+        else:
+            st.error("Secrets 설정에서 'firebase' 정보를 찾을 수 없습니다.")
+            return None
+    except Exception as e:
+        st.error(f"DB 연결 중 오류 발생: {e}")
         return None
 
 db = init_db()
@@ -33,32 +38,35 @@ def get_portfolio_from_db():
     if db is None:
         return []
     try:
-        # created_at 정렬이 인덱스 문제로 실패할 수 있으므로, 실패 시 정렬 없이 가져오도록 보완
-        try:
-            docs = db.collection(COLLECTION_NAME).order_by("created_at", direction=firestore.Query.DESCENDING).stream()
-            return [{"id": d.id, **d.to_dict()} for d in docs]
-        except Exception:
-            # 정렬 쿼리 실패 시 기본 스트림으로 시도
-            docs = db.collection(COLLECTION_NAME).stream()
-            return [{"id": d.id, **d.to_dict()} for d in docs]
+        # 인덱스 생성 전까지는 order_by 없이 시도하여 데이터 확인 우선
+        docs = db.collection(COLLECTION_NAME).stream()
+        results = [{"id": d.id, **d.to_dict()} for d in docs]
+        # 수동 정렬 (DB 인덱스 오류 방지)
+        results.sort(key=lambda x: x.get('created_at', datetime.min), reverse=True)
+        return results
     except Exception as e:
-        st.error(f"데이터를 불러오는 중 오류 발생: {e}")
+        st.warning(f"데이터를 불러오는 중 문제가 발생했습니다: {e}")
         return []
 
 def add_to_portfolio(name, ticker, buy_price, quantity):
-    if db:
-        try:
-            db.collection(COLLECTION_NAME).add({
-                "name": name, 
-                "ticker": ticker, 
-                "buy_price": float(buy_price), 
-                "quantity": int(quantity), 
-                "created_at": datetime.now()
-            })
+    if db is None:
+        st.error("데이터베이스에 연결되어 있지 않습니다.")
+        return False
+    try:
+        # Firestore에 데이터 추가 시도
+        doc_ref = db.collection(COLLECTION_NAME).add({
+            "name": name, 
+            "ticker": ticker, 
+            "buy_price": float(buy_price), 
+            "quantity": int(quantity), 
+            "created_at": datetime.now()
+        })
+        # doc_ref[1]은 새로 생성된 문서의 Reference입니다.
+        if doc_ref:
             return True
-        except Exception as e:
-            st.error(f"등록 실패: {e}")
-            return False
+    except Exception as e:
+        st.error(f"Firestore에 데이터를 쓰는 중 오류가 발생했습니다: {e}")
+        return False
     return False
 
 def delete_from_portfolio(doc_id):
@@ -67,7 +75,7 @@ def delete_from_portfolio(doc_id):
             db.collection(COLLECTION_NAME).document(doc_id).delete()
             return True
         except Exception as e:
-            st.error(f"삭제 실패: {e}")
+            st.error(f"삭제 중 오류 발생: {e}")
             return False
     return False
 
@@ -147,31 +155,33 @@ st.divider()
 # 2. 보유 종목 포트폴리오 관리
 st.subheader("💼 내 보유 종목 포트폴리오 관리")
 
-with st.expander("➕ 새 종목 등록하기", expanded=False):
+with st.expander("➕ 새 종목 등록하기", expanded=True):
     c1, c2, c3, c4 = st.columns([2, 2, 2, 1])
-    in_name = c1.text_input("종목명 (또는 티커)")
-    in_buy = c2.number_input("평단가", min_value=0.0, step=100.0)
+    in_name = c1.text_input("종목명 (또는 티커)", placeholder="예: 삼성전자")
+    in_buy = c2.number_input("평단가", min_value=0.0, step=100.0, format="%.2f")
     in_qty = c3.number_input("수량", min_value=0, step=1)
     
     if c4.button("등록"):
         if in_name and in_buy > 0 and in_qty > 0:
-            success = add_to_portfolio(in_name, get_ticker_from_name(in_name), in_buy, in_qty)
-            if success:
-                st.success(f"{in_name} 등록 완료!")
-                st.rerun()
+            ticker = get_ticker_from_name(in_name)
+            with st.spinner('등록 중...'):
+                success = add_to_portfolio(in_name, ticker, in_buy, in_qty)
+                if success:
+                    st.success(f"'{in_name}'({ticker}) 등록에 성공했습니다!")
+                    # 세션 상태 강제 동기화를 위해 데이터 재로딩 유도
+                    st.rerun()
         else:
-            st.warning("종목명, 평단가, 수량을 정확히 입력해주세요.")
+            st.warning("종목 정보(이름, 평단가, 수량)를 모두 입력해주세요.")
 
-# DB에서 목록 새로고침
+# DB에서 목록 불러오기
 portfolio = get_portfolio_from_db()
 
 if portfolio:
     data_list = []
     total_cost, total_eval = 0, 0
     
-    with st.spinner('실시간 시세를 불러오는 중...'):
+    with st.spinner('실시간 포트폴리오 분석 중...'):
         for item in portfolio:
-            # 티커가 없거나 잘못된 경우 대비
             ticker = item.get('ticker', '')
             if not ticker: continue
             
@@ -199,28 +209,29 @@ if portfolio:
             })
 
     if data_list:
-        # 전체 요약 지표
+        # 요약 정보
         s1, s2, s3 = st.columns(3)
         s1.metric("총 매수금액", f"{total_cost:,.0f}원")
         s2.metric("총 평가금액", f"{total_eval:,.0f}원")
         total_gain_pct = (total_eval / total_cost - 1) * 100 if total_cost > 0 else 0
         s3.metric("총 손익", f"{total_eval-total_cost:,.0f}원", f"{total_gain_pct:+.2f}%")
 
-        # 포트폴리오 테이블
+        # 데이터 프레임 출력
         df_p = pd.DataFrame(data_list)
         st.dataframe(df_p.drop(columns="ID"), use_container_width=True)
 
         # 삭제 기능
-        del_col1, del_col2 = st.columns([3, 1])
-        target_name = del_col1.selectbox("삭제할 종목 선택", df_p['종목'].tolist())
-        if del_col2.button("선택 삭제"):
-            doc_id = df_p[df_p['종목'] == target_name]['ID'].values[0]
-            if delete_from_portfolio(doc_id):
-                st.rerun()
+        with st.expander("🗑️ 종목 삭제"):
+            del_target = st.selectbox("삭제할 종목 선택", df_p['종목'].tolist())
+            if st.button("선택한 종목 삭제"):
+                doc_id = df_p[df_p['종목'] == del_target]['ID'].values[0]
+                if delete_from_portfolio(doc_id):
+                    st.success("삭제되었습니다.")
+                    st.rerun()
     else:
-        st.info("데이터를 불러올 수 없습니다.")
+        st.info("포트폴리오 데이터를 가공할 수 없습니다.")
 else:
-    st.info("등록된 종목이 없습니다. 위 '새 종목 등록하기'를 이용해 보세요.")
+    st.info("등록된 종목이 없습니다. 위 '새 종목 등록하기' 메뉴에서 종목을 추가해 보세요.")
 
 st.divider()
 
@@ -240,7 +251,6 @@ with calc_col1:
     b_price = st.number_input("구매 가격", value=float(c_price) if c_price > 0 else 0.0, key="calc_buy_price")
     qty = st.number_input("보유 수량 ", value=0, key="calc_qty")
     
-    # 목표 비율
     p_c1, p_c2 = st.columns(2)
     sl_pct = p_c1.number_input("손절 (%)", value=10.0, key="calc_sl_pct")
     tp_pct = p_c2.number_input("익절 (%)", value=20.0, key="calc_tp_pct")
@@ -256,7 +266,6 @@ with calc_col2:
         g1.error(f"📉 손절가: {sl_price:,.0f}")
         g2.success(f"📈 익절가: {tp_price:,.0f}")
         
-        # 상세 펀더멘탈 (yf.info 활용)
         if calc_name:
             st.write("---")
             st.write(f"🔍 **{calc_name} 주요 지표**")
@@ -272,6 +281,7 @@ with calc_col2:
         st.info("종목명과 투자 정보를 입력하면 가이드와 상세 지표가 표시됩니다.")
 
 # 사이드바
-if st.sidebar.button("새로고침"):
+if st.sidebar.button("전체 새로고침"):
     st.rerun()
-st.sidebar.info("Firestore DB에 안전하게 저장됩니다.")
+st.sidebar.markdown("---")
+st.sidebar.info("💡 **Firestore DB 상태:** 연결됨" if db else "⚠️ **Firestore DB 상태:** 연결 안 됨")
