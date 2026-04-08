@@ -6,6 +6,7 @@ from google.cloud import firestore
 from google.oauth2 import service_account
 import json
 import requests
+import re
 
 # --- 1. 페이지 설정 ---
 st.set_page_config(
@@ -14,15 +15,30 @@ st.set_page_config(
     layout="wide"
 )
 
-# --- 2. Firestore 초기화 (가장 안정적인 V1.1 방식 기반) ---
+# --- 2. Firestore 초기화 (JSON 파싱 에러 방지 로직 강화) ---
 @st.cache_resource
 def init_db():
     try:
         if "firebase" in st.secrets:
             raw_json = st.secrets["firebase"]["text_key"]
-            key_dict = json.loads(raw_json.replace("\\n", "\n"))
+            
+            # JSON 파싱 에러(Invalid control character) 방지를 위한 전처리
+            # 1. 실제 줄바꿈 문자를 제거하거나 이스케이프 처리
+            clean_json = raw_json.replace('\n', '\\n').replace('\r', '\\r')
+            # 2. 중복 이스케이프 방지 및 제어 문자 허용 로직
+            try:
+                # strict=False는 탭, 줄바꿈 등 제어 문자를 허용합니다.
+                key_dict = json.loads(raw_json, strict=False)
+            except json.JSONDecodeError:
+                # 정규식을 이용해 유효하지 않은 제어 문자 강제 제거 후 재시도
+                fixed_json = re.sub(r'[\x00-\x1F\x7F]', '', raw_json)
+                key_dict = json.loads(fixed_json)
+            
+            # private_key 내부의 이스케이프된 \n을 실제 줄바꿈으로 복원
+            if "private_key" in key_dict:
+                key_dict["private_key"] = key_dict["private_key"].replace("\\n", "\n")
+                
             creds = service_account.Credentials.from_service_account_info(key_dict)
-            # database 명시 없이 기본 연결 사용
             client = firestore.Client(credentials=creds, project=key_dict.get('project_id'))
             return client
         return None
@@ -33,7 +49,7 @@ def init_db():
 db = init_db()
 COLLECTION_NAME = "my_portfolio"
 
-# --- 3. DB 핸들링 함수 (V1.2 기능 복구) ---
+# --- 3. DB 핸들링 함수 ---
 def get_portfolio_from_db():
     if db is None: return []
     try:
@@ -119,7 +135,7 @@ def get_info_data(ticker):
     except:
         return None
 
-# --- 5. 티커 변환 로직 (자동 검색 강화) ---
+# --- 5. 티커 변환 로직 ---
 COMPANY_TICKER_MAP = {
     "삼성전자": "005930.KS", "SK하이닉스": "000660.KS", "네이버": "035420.KS",
     "카카오": "035720.KS", "현대차": "005380.KS", "애플": "AAPL", "테슬라": "TSLA",
