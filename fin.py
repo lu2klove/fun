@@ -11,7 +11,7 @@ from bs4 import BeautifulSoup
 
 # --- 1. 페이지 설정 ---
 st.set_page_config(
-    page_title="Global Financial Dashboard V2.5",
+    page_title="Global Financial Dashboard V2.6",
     page_icon="📈",
     layout="wide"
 )
@@ -106,6 +106,7 @@ def get_finance_data(ticker):
     # 그 외 또는 실패 시 yfinance
     try:
         yt = yf.Ticker(ticker)
+        # .info를 쓰지 않고 history에서 최신 가격만 가져옴 (Rate Limit 방지)
         data = yt.history(period="5d")
         if not data.empty and len(data) >= 2:
             price = data['Close'].iloc[-1]
@@ -126,14 +127,8 @@ def search_ticker_korea(query):
             data = res.json()
             items = data.get('items', [[]])[0]
             if items:
-                code = items[0][1] # 예: '086520'
-                # 코스닥/코스피 구분은 yfinance 연동을 위해 체크
-                for suffix in [".KQ", ".KS"]:
-                    test_ticker = code + suffix
-                    yt = yf.Ticker(test_ticker)
-                    if not yt.history(period="1d").empty:
-                        return test_ticker
-                return code # 접미사 없어도 네이버 로직에선 사용 가능
+                code = items[0][1]
+                return code # 6자리 코드 반환
     except:
         pass
     return None
@@ -159,21 +154,12 @@ def validate_and_get_ticker(name):
     except:
         pass
     
-    # 3. 직접 입력 확인
     if not ticker_candidate and clean.replace(".","").replace("-","").isalnum():
         ticker_candidate = clean.upper()
     
-    if ticker_candidate:
-        try:
-            yt = yf.Ticker(ticker_candidate)
-            if not yt.history(period="1d").empty:
-                return ticker_candidate
-        except:
-            pass
-            
-    return None
+    return ticker_candidate
 
-# --- 5. DB 및 차트 함수 (기존 유지) ---
+# --- 5. DB 및 차트 함수 ---
 def get_portfolio_from_db():
     if db is None: return []
     try:
@@ -197,7 +183,9 @@ def add_to_portfolio(name, ticker, buy_price, quantity, stop_loss_pct, tp1_pct, 
 @st.cache_data(ttl=300)
 def get_chart_data(ticker, name, period="1mo"):
     try:
-        yt = yf.Ticker(ticker)
+        # yfinance용 티커 보정 (숫자 6자리면 .KS 붙임)
+        yf_ticker = ticker + ".KS" if re.match(r'^\d{6}$', ticker) else ticker
+        yt = yf.Ticker(yf_ticker)
         interval = "5m" if period == "1d" else "1d"
         data = yt.history(period=period, interval=interval)
         if not data.empty:
@@ -208,7 +196,7 @@ def get_chart_data(ticker, name, period="1mo"):
 
 # --- 6. UI 구성 ---
 st.title("📊 글로벌 경제 통합 대시보드")
-st.caption(f"네이버 금융 + yfinance 통합 엔진 V2.5 | {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+st.caption(f"네이버 금융 중심 엔진 V2.6 (Rate Limit 최적화) | {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
 if db is not None:
     # --- 주요 지표 ---
@@ -263,7 +251,7 @@ if db is not None:
         st.markdown("---")
         st.write("🏛️ **상세 펀더멘털 및 가치 지표 (네이버 기준)**")
         
-        # 네이버 금융에서 펀더멘털 데이터 가져오기
+        # 네이버 금융에서 펀더멘털 데이터 가져오기 (차단 위험이 적음)
         match = re.match(r'^(\d{6})', analysis_ticker)
         naver_info = None
         if match:
@@ -279,14 +267,15 @@ if db is not None:
             with st.expander("전체 지표 리스트", expanded=True):
                 st.table(pd.DataFrame({"지표": f.keys(), "값": f.values()}))
         else:
-            # yfinance 폴백
-            info = yf.Ticker(analysis_ticker).info
-            if info:
-                m1, m2, m3 = st.columns(3)
-                m1.metric("현재가", f"{info.get('currentPrice', 0):,.2f}")
-                m2.metric("PER", f"{info.get('forwardPE', 'N/A')}")
-                m3.metric("PBR", f"{info.get('priceToBook', 'N/A')}")
-            else:
-                st.warning("상세 데이터를 불러올 수 없습니다.")
+            # yfinance 폴백 (Rate Limit 대응: .info 대신 history 마지막 값 활용)
+            try:
+                curr, _, _ = get_finance_data(analysis_ticker)
+                if curr > 0:
+                    st.metric("현재가", f"{curr:,.2f}")
+                    st.info("야후 파이낸스 요청 제한으로 인해 상세 펀더멘털 정보를 표시할 수 없습니다. 나중에 다시 시도해주세요.")
+                else:
+                    st.warning("데이터를 불러올 수 없습니다.")
+            except:
+                st.warning("현재 서비스 호출량이 많아 데이터를 불러올 수 없습니다.")
 
 st.sidebar.button("♻️ 새로고침", on_click=lambda: st.cache_data.clear())
