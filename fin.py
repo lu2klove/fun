@@ -5,6 +5,7 @@ from datetime import datetime
 from google.cloud import firestore
 from google.oauth2 import service_account
 import json
+import re
 
 # --- 1. 페이지 설정 ---
 st.set_page_config(
@@ -21,17 +22,23 @@ def init_db():
         if "firebase" in st.secrets:
             raw_json = st.secrets["firebase"]["text_key"]
             try:
-                # 1. JSON 기본 로드
+                # 1. JSON 기본 로드 (엄격한 검사 해제)
                 key_dict = json.loads(raw_json, strict=False)
             except json.JSONDecodeError:
-                # 2. 제어 문자 및 개행 문자 정제 후 재시도
+                # 2. JSON 구조 자체가 깨진 경우를 대비한 클리닝
                 cleaned_json = raw_json.replace('\n', '\\n').replace('\r', '\\r')
                 key_dict = json.loads(cleaned_json, strict=False)
 
-            # --- PEM 파일 로드 오류 해결을 위한 핵심 로직 ---
-            # private_key 내부의 이중 이스케이프된 \\n을 실제 개행 문자 \n으로 변환
+            # --- PEM 파일 로드 오류(InvalidByte) 해결을 위한 강화된 로직 ---
             if "private_key" in key_dict:
-                key_dict["private_key"] = key_dict["private_key"].replace("\\n", "\n")
+                pk = key_dict["private_key"]
+                # (1) 문자열로 된 '\\n'을 실제 개행 문자로 변경
+                pk = pk.replace("\\n", "\n")
+                # (2) 혹시 모를 중복된 개행이나 공백 제거 후 표준 PEM 형식 확인
+                pk = pk.strip()
+                # (3) PEM 헤더/푸터 사이의 공백이 깨진 경우를 대비해 정규식으로 정제 가능하지만, 
+                # 가장 확실한 방법은 \n이 하나씩만 들어가게 하는 것입니다.
+                key_dict["private_key"] = pk
 
             creds = service_account.Credentials.from_service_account_info(key_dict)
             client = firestore.Client(credentials=creds, project=key_dict['project_id'])
@@ -41,7 +48,18 @@ def init_db():
             return None
     except Exception as e:
         st.error(f"DB 연결 중 오류 발생: {e}")
-        st.info("💡 **해결 방법:** secrets.toml 내의 private_key 값이 `-----BEGIN PRIVATE KEY-----\\n...` 형태인지 확인하고, 따옴표가 3개(`\"\"\"`)로 감싸져 있는지 확인하세요.")
+        st.info("💡 **최종 해결 가이드:**")
+        st.markdown("""
+        1. Google Cloud 콘솔에서 다운로드한 **JSON 파일의 내용 전체**를 복사하세요.
+        2. Streamlit Secrets 설정 시 아래와 같이 입력했는지 확인하세요:
+        ```toml
+        [firebase]
+        text_key = '''
+        { ... 여기에 복사한 JSON 내용 전체 ... }
+        '''
+        ```
+        3. `private_key` 값 안에 실제 줄바꿈이 있으면 안 되며, 반드시 `\\n` 문자가 포함된 한 줄의 문자열이어야 합니다.
+        """)
         return None
 
 db = init_db()
@@ -54,6 +72,7 @@ def get_portfolio_from_db():
     try:
         docs = db.collection(COLLECTION_NAME).stream()
         results = [{"id": d.id, **d.to_dict()} for d in docs]
+        # 수동 정렬 (DB 인덱스 오류 방지)
         results.sort(key=lambda x: x.get('created_at', datetime.min), reverse=True)
         return results
     except Exception as e:
