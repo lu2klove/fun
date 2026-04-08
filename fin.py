@@ -176,21 +176,30 @@ def get_ticker_from_name(name):
     return found if found else clean.upper()
 
 # --- 6. UI 구성 ---
-st.title("📊 글로벌 경제 통합 대시보드 V1.8")
+st.title("📊 글로벌 경제 통합 대시보드")
+st.caption(f"버전: 2026-04-08 V1.2 | DB: richfin | {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
 if db is None:
     st.error("❌ Firestore 연결에 실패했습니다.")
 else:
     # --- 최상단 주요 지표 ---
     st.subheader("🌐 주요 시장 지표")
-    indices_list = [("^KS11", "KOSPI"), ("^IXIC", "NASDAQ"), ("KRW=X", "USD/KRW"), ("BTC-USD", "Bitcoin")]
+    indices_list = [
+        ("^KS11", "KOSPI"), ("^KQ11", "KOSDAQ"), 
+        ("^IXIC", "NASDAQ"), ("^GSPC", "S&P500"),
+        ("KRW=X", "USD/KRW"), ("BTC-USD", "Bitcoin"), ("CL=F", "WTI Oil")
+    ]
+    
     top_period = st.radio("차트 기간", ["1d", "1mo", "1y"], index=1, horizontal=True)
+    
+    # 7개 지표를 표시하기 위해 컬럼 생성
     idx_cols = st.columns(len(indices_list))
     for i, (ticker, name) in enumerate(indices_list):
         p, _, pct = get_finance_data(ticker)
         idx_cols[i].metric(name, f"{p:,.2f}", f"{pct:+.2f}%")
         m_df = get_chart_data(ticker, name, top_period)
-        if not m_df.empty: idx_cols[i].line_chart(m_df, height=80)
+        if not m_df.empty: 
+            idx_cols[i].line_chart(m_df, height=80)
 
     st.divider()
 
