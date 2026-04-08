@@ -49,13 +49,14 @@ COLLECTION_NAME = "my_portfolio"
 
 # --- 3. 데이터 수집 보조 함수 ---
 def get_naver_ticker_info(code):
-    """네이버 금융 파싱: 실시간 시세 및 펀더멘털"""
+    """네이버 금융 파싱: 실시간 시세 및 확장된 펀더멘털 정보 수집"""
     try:
         url = f"https://finance.naver.com/item/main.naver?code={code}"
         headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36'}
         res = requests.get(url, headers=headers, timeout=5)
         soup = BeautifulSoup(res.text, 'html.parser')
         
+        # 기본 시세 정보
         no_today = soup.select_one(".no_today")
         blind = no_today.select_one(".blind") if no_today else None
         price = float(blind.text.replace(",", "")) if blind else 0.0
@@ -70,14 +71,32 @@ def get_naver_ticker_info(code):
         pct = float(rate_text) * (-1 if is_down else 1)
 
         fundamental = {}
+        
+        # 1. 우측 섹션 (시가총액, 상장주식수 등)
+        aside = soup.select_one(".aside")
+        if aside:
+            # 시가총액
+            market_cap_area = aside.select_one("#_market_sum")
+            if market_cap_area:
+                fundamental['시가총액'] = market_cap_area.text.strip().replace("\t", "").replace("\n", "")
+            
+            # 상장주식수
+            stock_count_area = aside.select_one("th:-soup-contains('상장주식수')")
+            if stock_count_area:
+                fundamental['상장주식수'] = stock_count_area.find_next_sibling("td").text.strip()
+
+        # 2. 투자지표 섹션 (PER, PBR, 배당수익률 등)
         tab_con = soup.select_one(".tab_con1")
         if tab_con:
             for tr in tab_con.select("tr"):
-                th, td = tr.select_one("th"), tr.select_one("td")
+                th = tr.select_one("th")
+                td = tr.select_one("td")
                 if th and td:
-                    label = th.text.strip()
-                    val = td.text.strip().replace(",", "").replace("배", "").replace("%", "")
-                    fundamental[label] = val
+                    label = th.get_text(strip=True)
+                    # 불필요한 텍스트 제거 및 값 추출
+                    val = td.get_text(strip=True).replace(",", "").replace("배", "").replace("%", "")
+                    if label in ['PER', 'PBR', 'ROE', '추정PER', 'EPS', 'BPS', '현금배당수익률']:
+                        fundamental[label] = val
 
         return {"price": price, "change": diff, "pct": pct, "fundamental": fundamental}
     except: return None
@@ -135,24 +154,20 @@ def validate_and_get_ticker(name):
         'Referer': 'https://finance.naver.com/'
     }
 
-    # 2. 개선된 네이버 금융 자동완성 API (st=111: 국내외 통합)
+    # 2. 개선된 네이버 금융 자동완성 API
     try:
         ac_url = f"https://ac.finance.naver.com/ac?q={query}&st=111&r_format=json&t_koreng=1"
         res = requests.get(ac_url, headers=headers, timeout=5).json()
         if res.get('items') and res['items'][0]:
-            # 첫 번째 결과의 [이름, 코드, ...] 구조에서 코드를 가져옴
             return res['items'][0][0][1]
     except: pass
 
-    # 3. 네이버 검색 결과 직접 파싱 (에코프로 등 유명 종목의 확실한 방법)
+    # 3. 네이버 검색 결과 직접 파싱
     try:
         search_url = f"https://search.naver.com/search.naver?query={query}"
         res = requests.get(search_url, headers=headers, timeout=5)
-        # 종목코드 6자리 정규식 추출
         match = re.search(r'data-area-code="(\d{6})"', res.text)
         if match: return match.group(1)
-        
-        # '에코프로(086520)' 등의 텍스트 패턴 추출
         match = re.search(r'\((\d{6})\)', res.text)
         if match: return match.group(1)
     except: pass
@@ -319,10 +334,21 @@ if db is not None:
                 n_info = get_naver_ticker_info(match.group(1))
                 if n_info and n_info['fundamental']:
                     f = n_info['fundamental']
+                    
+                    # 펀더멘털 핵심 정보 (시가총액 등)
+                    st.write(f"🏢 **기본 정보**")
+                    st.caption(f"시가총액: {f.get('시가총액', 'N/A')} / 상장주식수: {f.get('상장주식수', 'N/A')}")
+                    
+                    st.write(f"📊 **투자 지표**")
                     m1, m2, m3 = st.columns(3)
                     m1.metric("PER", f"{f.get('PER', 'N/A')}배")
                     m2.metric("PBR", f"{f.get('PBR', 'N/A')}배")
                     m3.metric("ROE", f"{f.get('ROE', 'N/A')}%")
+                    
+                    m4, m5, m6 = st.columns(3)
+                    m4.metric("추정PER", f"{f.get('추정PER', 'N/A')}배")
+                    m5.metric("배당수익률", f"{f.get('현금배당수익률', 'N/A')}%")
+                    m6.metric("BPS", f"{int(float(f.get('BPS', 0))):,}" if f.get('BPS') else "N/A")
             else:
                 st.info("해외 종목 상세 지표 제한")
 
