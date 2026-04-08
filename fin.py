@@ -214,7 +214,7 @@ else:
     st.divider()
 
     # --- 2. 메인 본문 ---
-    col_left, col_right = st.columns([3.2, 1.8])
+    col_left, col_right = st.columns([3.5, 1.5])
 
     with col_left:
         st.subheader("💼 내 포트폴리오 관리")
@@ -301,6 +301,8 @@ else:
                     "평단가": item['buy_price'],
                     "현재가": curr,
                     "수익률": profit_p,
+                    "손절(%)": item.get('sl', -10.0),
+                    "익절(%)": item.get('tp', 20.0),
                     "매수일": b_date_str,
                     "매도일": s_date_str,
                     "메모": "📝" if item.get('note') else ""
@@ -308,8 +310,14 @@ else:
             
             df = pd.DataFrame(display_rows)
             st.dataframe(
-                df.style.apply(lambda x: ['color: #FF4B4B' if x['수익률'] > 0 else 'color: #1C83E1' if x['수익률'] < 0 else ''] * len(x), axis=1)
-                .format({"평단가": "{:,.0f}", "현재가": "{:,.0f}", "수익률": "{:+.2f}%"}),
+                df.style.apply(lambda x: ['color: #FF4B4B' if x['수익률'] > 0 else 'color: #1C83E1' if x['수익률'] < 0 else ''] * 4 + ['color: #28a745'] * 2 + [''] * 3, axis=1)
+                .format({
+                    "평단가": "{:,.0f}", 
+                    "현재가": "{:,.0f}", 
+                    "수익률": "{:+.2f}%", 
+                    "손절(%)": "{:+.1f}%", 
+                    "익절(%)": "{:+.1f}%"
+                }),
                 use_container_width=True, hide_index=True
             )
         else:
