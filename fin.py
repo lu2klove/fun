@@ -47,21 +47,19 @@ def init_db():
 db = init_db()
 COLLECTION_NAME = "my_portfolio"
 
-# --- 3. 데이터 수집 보조 함수 (네이버 금융 파싱) ---
+# --- 3. 데이터 수집 보조 함수 ---
 def get_naver_ticker_info(code):
-    """네이버 금융에서 종목의 실시간 시세 및 기본 정보를 가져옵니다."""
+    """네이버 금융 파싱: 실시간 시세 및 펀더멘털"""
     try:
         url = f"https://finance.naver.com/item/main.naver?code={code}"
         headers = {'User-Agent': 'Mozilla/5.0'}
         res = requests.get(url, headers=headers, timeout=5)
         soup = BeautifulSoup(res.text, 'html.parser')
         
-        # 현재가 추출
         no_today = soup.select_one(".no_today")
         blind = no_today.select_one(".blind") if no_today else None
         price = float(blind.text.replace(",", "")) if blind else 0.0
         
-        # 전일비 및 등락률
         no_exday = soup.select_one(".no_exday")
         diff_text = no_exday.select_one(".blind").text.replace(",", "") if no_exday else "0"
         is_down = "ico_down" in str(no_exday)
@@ -71,222 +69,207 @@ def get_naver_ticker_info(code):
         rate_text = rate_tag.select_one(".blind").text.replace("%", "") if rate_tag else "0"
         pct = float(rate_text) * (-1 if is_down else 1)
 
-        # 펀더멘털 지표
         fundamental = {}
         tab_con = soup.select_one(".tab_con1")
         if tab_con:
-            trs = tab_con.select("tr")
-            for tr in trs:
-                th = tr.select_one("th")
-                td = tr.select_one("td")
+            for tr in tab_con.select("tr"):
+                th, td = tr.select_one("th"), tr.select_one("td")
                 if th and td:
                     label = th.text.strip()
                     val = td.text.strip().replace(",", "").replace("배", "").replace("%", "")
                     fundamental[label] = val
 
         return {"price": price, "change": diff, "pct": pct, "fundamental": fundamental}
-    except:
-        return None
+    except: return None
 
 @st.cache_data(ttl=60)
 def get_finance_data(ticker):
-    """네이버 우선, yfinance 차선책으로 시세 데이터를 가져옵니다."""
-    # 한국 종목 코드(6자리 숫자)인 경우 네이버 우선
     match = re.match(r'^(\d{6})', ticker)
     if match:
-        code = match.group(1)
-        naver_data = get_naver_ticker_info(code)
-        if naver_data and naver_data['price'] > 0:
-            return naver_data['price'], naver_data['change'], naver_data['pct']
+        data = get_naver_ticker_info(match.group(1))
+        if data and data['price'] > 0: return data['price'], data['change'], data['pct']
     
-    # 그 외 또는 실패 시 yfinance (Rate Limit 방지를 위해 history 사용)
     try:
         yt = yf.Ticker(ticker)
-        data = yt.history(period="5d")
-        if not data.empty and len(data) >= 2:
-            price = data['Close'].iloc[-1]
-            prev_price = data['Close'].iloc[-2]
-            change = price - prev_price
-            change_pct = (change / prev_price) * 100
-            return float(price), float(change), float(change_pct)
-    except:
-        pass
+        hist = yt.history(period="5d")
+        if not hist.empty and len(hist) >= 2:
+            p = hist['Close'].iloc[-1]
+            c = p - hist['Close'].iloc[-2]
+            return float(p), float(c), float((c/hist['Close'].iloc[-2])*100)
+    except: pass
     return 0.0, 0.0, 0.0
 
-def search_ticker_korea(query):
-    """네이버 금융 검색을 활용하여 한국 종목 코드를 찾습니다."""
+@st.cache_data(ttl=300)
+def get_chart_data(ticker, period="1mo"):
+    """기간별 차트 데이터 수집 (년/월/일 대응)"""
     try:
-        url = f"https://ac.finance.naver.com/ac?q={query}&q_enc=euc-kr&st=111&frm=stock&r_format=json&r_enc=euc-kr&r_unicode=1&t_koreng=1"
-        res = requests.get(url, timeout=5)
-        if res.status_code == 200:
-            data = res.json()
-            items = data.get('items', [[]])[0]
-            if items:
-                return items[0][1]
-    except:
-        pass
-    return None
+        yf_ticker = ticker + ".KS" if re.match(r'^\d{6}$', ticker) else ticker
+        yt = yf.Ticker(yf_ticker)
+        
+        # 기간 매핑
+        period_map = {"1일": "1d", "1개월": "1mo", "3개월": "3mo", "1년": "1y", "5년": "5y"}
+        p = period_map.get(period, "1mo")
+        interval = "5m" if p == "1d" else "1d"
+        
+        data = yt.history(period=p, interval=interval)
+        return data[['Close']]
+    except: return pd.DataFrame()
 
 def validate_and_get_ticker(name):
-    clean = name.strip()
-    if not clean: return None
-    kr_ticker = search_ticker_korea(clean)
-    if kr_ticker: return kr_ticker
-    
-    ticker_candidate = None
+    query = name.strip()
+    # 한국 종목 검색
     try:
-        url = f"https://query2.finance.yahoo.com/v1/finance/search?q={clean}"
-        res = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'}, timeout=5)
-        if res.status_code == 200:
-            data = res.json()
-            if data.get('quotes'): ticker_candidate = data['quotes'][0]['symbol']
+        res = requests.get(f"https://ac.finance.naver.com/ac?q={query}&st=111&r_format=json&t_koreng=1", timeout=5).json()
+        items = res.get('items', [[]])[0]
+        if items: return items[0][1]
     except: pass
     
-    if not ticker_candidate and clean.replace(".","").replace("-","").isalnum():
-        ticker_candidate = clean.upper()
-    return ticker_candidate
-
-# --- 4. 포트폴리오 로직 ---
-def get_portfolio_from_db():
-    if db is None: return []
+    # 해외 종목 검색
     try:
-        docs = db.collection(COLLECTION_NAME).stream()
-        results = [{"id": d.id, **d.to_dict()} for d in docs]
-        results.sort(key=lambda x: x.get('created_at', datetime.min), reverse=True)
-        return results
-    except: return []
+        res = requests.get(f"https://query2.finance.yahoo.com/v1/finance/search?q={query}", headers={'User-Agent': 'Mozilla/5.0'}, timeout=5).json()
+        if res.get('quotes'): return res['quotes'][0]['symbol']
+    except: pass
+    return query.upper()
 
-def add_to_portfolio(name, ticker, buy_price, quantity, buy_date):
+# --- 4. Firestore CRUD ---
+def db_action(action, doc_id=None, data=None):
     if db is None: return False
     try:
-        db.collection(COLLECTION_NAME).add({
-            "name": name, "ticker": ticker, "buy_price": float(buy_price), "quantity": int(quantity),
-            "buy_date": datetime.combine(buy_date, datetime.min.time()), "created_at": datetime.now()
-        })
+        col = db.collection(COLLECTION_NAME)
+        if action == "add": col.add(data)
+        elif action == "update": col.document(doc_id).update(data)
+        elif action == "delete": col.document(doc_id).delete()
         return True
     except: return False
 
-@st.cache_data(ttl=300)
-def get_chart_data(ticker, name, period="1mo"):
-    try:
-        # yfinance용 티커 보정
-        yf_ticker = ticker + ".KS" if re.match(r'^\d{6}$', ticker) else ticker
-        yt = yf.Ticker(yf_ticker)
-        data = yt.history(period=period)
-        if not data.empty:
-            return data[['Close']]
-    except: return pd.DataFrame()
-
-# --- 5. UI 구성 (V2.0 스타일 복구) ---
+# --- 5. UI 구성 ---
 st.title("📊 Global Finance Dashboard V2.1")
-st.caption(f"네이버 금융 엔진 + 시각화 복구 모드 | {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
 if db is not None:
-    # --- 상단 주요 지표 (Metric + Sparkline) ---
+    # --- 1. 상단 지표 (기간 선택 추가) ---
     st.subheader("🌐 글로벌 시장 주요 지표")
-    indices = [("^KS11", "KOSPI"), ("^KQ11", "KOSDAQ"), ("^IXIC", "NASDAQ"), ("^GSPC", "S&P500"), ("KRW=X", "USD/KRW"), ("BTC-USD", "Bitcoin")]
+    idx_period = st.radio("지표 기간", ["1일", "1개월", "1년"], horizontal=True, label_visibility="collapsed")
+    indices = [("^KS11", "KOSPI"), ("^KQ11", "KOSDAQ"), ("^IXIC", "NASDAQ"), ("^GSPC", "S&P500"), ("KRW=X", "USD/KRW"), ("BTC-USD", "BTC")]
     idx_cols = st.columns(len(indices))
     
     for i, (ticker, label) in enumerate(indices):
         price, _, pct = get_finance_data(ticker)
-        color = "red" if pct > 0 else "blue" if pct < 0 else "gray"
+        color = "#FF4B4B" if pct > 0 else "#1C83E1" if pct < 0 else "#A0A0A0"
         with idx_cols[i]:
             st.metric(label, f"{price:,.2f}", f"{pct:+.2f}%")
-            # 작은 차트 (Sparkline) 추가
-            spark_df = get_chart_data(ticker, label, "1mo")
+            spark_df = get_chart_data(ticker, idx_period)
             if not spark_df.empty:
-                fig = go.Figure()
-                fig.add_trace(go.Scatter(y=spark_df['Close'], mode='lines', line=dict(color=color, width=2)))
+                fig = go.Figure(go.Scatter(y=spark_df['Close'], mode='lines', line=dict(color=color, width=2)))
                 fig.update_layout(height=40, margin=dict(l=0, r=0, t=0, b=0), xaxis_visible=False, yaxis_visible=False, paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)')
-                st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
+                st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False}, key=f"spark_{ticker}")
 
     st.divider()
 
-    # --- 메인 대시보드 레이아웃 ---
-    col_left, col_right = st.columns([3, 2])
+    # --- 2. 메인 본문 ---
+    col_left, col_right = st.columns([3.2, 1.8])
 
     with col_left:
-        st.subheader("💼 내 포트폴리오 상황")
+        st.subheader("💼 내 포트폴리오 관리")
         
-        # 종목 등록
-        with st.expander("➕ 종목 추가", expanded=False):
-            c1, c2, c3, c4 = st.columns(4)
-            reg_name = c1.text_input("종목명/티커")
-            reg_buy = c2.number_input("평단가", min_value=0.0)
-            reg_qty = c3.number_input("수량", min_value=0)
-            reg_date = c4.date_input("매수일", datetime.now())
-            if st.button("등록하기", use_container_width=True):
-                ticker = validate_and_get_ticker(reg_name)
-                if ticker:
-                    if add_to_portfolio(reg_name, ticker, reg_buy, reg_qty, reg_date):
-                        st.success("등록되었습니다!")
-                        st.rerun()
-                else: st.error("종목 정보를 찾을 수 없습니다.")
+        # 종목 등록/수정 모달(Expander)
+        with st.expander("➕ 종목 등록 / 📝 수정", expanded=False):
+            portfolio_raw = [{"id": d.id, **d.to_dict()} for d in db.collection(COLLECTION_NAME).stream()]
+            edit_target = st.selectbox("수정할 종목 선택 (새 등록은 '신규 등록')", ["신규 등록"] + [p['name'] for p in portfolio_raw])
+            
+            target_data = next((p for p in portfolio_raw if p['name'] == edit_target), None)
+            
+            c1, c2, c3 = st.columns(3)
+            name = c1.text_input("종목명", value=target_data['name'] if target_data else "")
+            buy_p = c2.number_input("평단가", value=float(target_data['buy_price']) if target_data else 0.0)
+            qty = c3.number_input("수량", value=int(target_data['quantity']) if target_data else 0)
+            
+            c4, c5, c6 = st.columns(3)
+            sl = c4.number_input("손절가 (%)", value=float(target_data.get('sl', -10.0)) if target_data else -10.0)
+            tp = c5.number_input("익절가 (%)", value=float(target_data.get('tp', 20.0)) if target_data else 20.0)
+            b_date = c6.date_input("매수일", value=target_data['buy_date'].date() if target_data else datetime.now())
+            
+            btn_col1, btn_col2 = st.columns(2)
+            if btn_col1.button("저장하기", use_container_width=True):
+                ticker = validate_and_get_ticker(name)
+                payload = {"name": name, "ticker": ticker, "buy_price": buy_p, "quantity": qty, "sl": sl, "tp": tp, "buy_date": datetime.combine(b_date, datetime.min.time()), "created_at": datetime.now()}
+                if target_data: db_action("update", target_data['id'], payload)
+                else: db_action("add", data=payload)
+                st.rerun()
+            
+            if target_data and btn_col2.button("삭제하기", use_container_width=True, type="secondary"):
+                db_action("delete", target_data['id'])
+                st.rerun()
 
-        # 포트폴리오 리스트 및 색상 적용
-        portfolio = get_portfolio_from_db()
-        if portfolio:
-            rows = []
-            for item in portfolio:
+        # 포트폴리오 목록 (색상 및 굵기 적용)
+        if portfolio_raw:
+            display_rows = []
+            for item in portfolio_raw:
                 curr, _, _ = get_finance_data(item['ticker'])
-                profit_pct = (curr / item['buy_price'] - 1) * 100 if item['buy_price'] > 0 else 0
-                rows.append({
+                profit_v = (curr - item['buy_price']) * item['quantity']
+                profit_p = (curr / item['buy_price'] - 1) * 100 if item['buy_price'] > 0 else 0
+                
+                display_rows.append({
                     "종목": item['name'],
-                    "현재가": f"{curr:,.2f}",
-                    "평단가": f"{item['buy_price']:,.2f}",
-                    "수익률": profit_pct,
-                    "보유수량": item['quantity'],
+                    "평단가": item['buy_price'],
+                    "현재가": curr,
+                    "수익률": profit_p,
+                    "수익금": profit_v,
+                    "손절가(%)": item.get('sl', -10.0),
+                    "익절가(%)": item.get('tp', 20.0),
                     "티커": item['ticker']
                 })
             
-            df_display = pd.DataFrame(rows)
+            df = pd.DataFrame(display_rows)
             
-            # 수익률 색상 입히기
-            def color_profit(val):
-                color = '#FF4B4B' if val > 0 else '#31333F' if val == 0 else '#1C83E1'
-                return f'color: {color}; font-weight: bold'
-            
+            def style_portfolio(row):
+                styles = [''] * len(row)
+                # 수익률/수익금 색상
+                p_color = 'color: #FF4B4B' if row['수익률'] > 0 else 'color: #1C83E1' if row['수익률'] < 0 else ''
+                styles[3] = p_color + '; font-weight: bold'
+                styles[4] = p_color + '; font-weight: bold'
+                # 손절가 (굵은 파랑)
+                styles[5] = 'color: #1C83E1; font-weight: 900'
+                # 익절가 (굵은 녹색)
+                styles[6] = 'color: #28A745; font-weight: 900'
+                return styles
+
             st.dataframe(
-                df_display.style.map(color_profit, subset=['수익률']).format({"수익률": "{:+.2f}%"}),
+                df.style.apply(style_portfolio, axis=1).format({
+                    "평단가": "{:,.0f}", "현재가": "{:,.0f}", "수익률": "{:+.2f}%", "수익금": "{:,.0f}"
+                }),
                 use_container_width=True, hide_index=True
             )
 
     with col_right:
         st.subheader("🔍 종목 정밀 분석")
-        if portfolio:
-            selected_stock_name = st.selectbox("분석 대상 선택", [p['name'] for p in portfolio])
-            selected_item = next(p for p in portfolio if p['name'] == selected_stock_name)
-            ticker = selected_item['ticker']
+        if portfolio_raw:
+            ana_name = st.selectbox("분석 종목", [p['name'] for p in portfolio_raw])
+            ana_item = next(p for p in portfolio_raw if p['name'] == ana_name)
             
-            # 1. 차트 섹션 (복구)
-            st.write(f"📈 **{selected_stock_name} ({ticker}) 주가 추이**")
-            chart_data = get_chart_data(ticker, selected_stock_name, "6mo")
-            if not chart_data.empty:
-                fig = go.Figure()
-                fig.add_trace(go.Scatter(x=chart_data.index, y=chart_data['Close'], name='종가', line=dict(color='#00CC96')))
-                fig.update_layout(height=250, margin=dict(l=0, r=0, t=10, b=0), template="plotly_white")
+            # 기간 선택
+            ana_period = st.segment_control("조회 기간", ["1일", "1개월", "3개월", "1년", "5년"], default="1개월")
+            
+            # 차트
+            st.write(f"📈 **{ana_name}** 주가 흐름")
+            c_data = get_chart_data(ana_item['ticker'], ana_period)
+            if not c_data.empty:
+                fig = go.Figure(go.Scatter(x=c_data.index, y=c_data['Close'], line=dict(color='#00CC96', width=2), fill='tozeroy'))
+                fig.update_layout(height=300, margin=dict(l=0, r=0, t=10, b=0), template="plotly_white", xaxis_rangeslider_visible=False)
                 st.plotly_chart(fig, use_container_width=True)
             
-            # 2. 펀더멘털 섹션 (네이버 우선 로직)
-            st.write("🏛️ **상세 가치 지표 (네이버 기준)**")
-            match = re.match(r'^(\d{6})', ticker)
-            naver_info = get_naver_ticker_info(match.group(1)) if match else None
-            
-            if naver_info and naver_info['fundamental']:
-                f = naver_info['fundamental']
-                m1, m2, m3 = st.columns(3)
-                m1.metric("PER", f"{f.get('PER', 'N/A')}배")
-                m2.metric("PBR", f"{f.get('PBR', 'N/A')}배")
-                m3.metric("배당수익률", f"{f.get('배당수익률', 'N/A')}%")
-                
-                with st.expander("전체 지표 보기"):
-                    st.table(pd.DataFrame({"지표": f.keys(), "값": f.values()}))
+            # 네이버 펀더멘털 지표
+            match = re.match(r'^(\d{6})', ana_item['ticker'])
+            if match:
+                st.markdown("🏛️ **네이버 금융 상세 지표**")
+                n_info = get_naver_ticker_info(match.group(1))
+                if n_info and n_info['fundamental']:
+                    f = n_info['fundamental']
+                    m1, m2 = st.columns(2)
+                    m1.metric("PER", f"{f.get('PER', 'N/A')}배")
+                    m2.metric("PBR", f"{f.get('PBR', 'N/A')}배")
+                    with st.expander("전체 가치 지표 리스트"):
+                        st.table(pd.DataFrame({"지표": f.keys(), "값": f.values()}))
             else:
-                # 해외 종목의 경우 yfinance 간소화 정보 (Rate Limit 우회)
-                p, _, pct = get_finance_data(ticker)
-                st.metric("현재가", f"{p:,.2f}", f"{pct:+.2f}%")
-                st.info("해외 종목은 상세 지표 수집이 제한적일 수 있습니다.")
-        else:
-            st.info("포트폴리오에 종목을 추가하면 분석 차트가 표시됩니다.")
+                st.info("해외 종목은 상세 펀더멘털 정보가 제한적입니다.")
 
 st.sidebar.button("♻️ 데이터 강제 갱신", on_click=lambda: st.cache_data.clear())
