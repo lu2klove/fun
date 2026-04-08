@@ -6,14 +6,15 @@ from google.cloud import firestore
 from google.oauth2 import service_account
 import json
 
---- 1. 페이지 설정 ---
+#--- 1. 페이지 설정 ---
 st.set_page_config(
 page_title="Global Financial Dashboard",
 page_icon="📈",
 layout="wide"
 )
 
---- 2. Firestore 데이터베이스 초기화 ---
+
+#--- 2. Firestore 데이터베이스 초기화 ---
 @st.cache_resource
 def init_db():
 try:
@@ -28,7 +29,7 @@ return None
 db = init_db()
 COLLECTION_NAME = "my_portfolio"
 
---- 3. DB 핸들링 함수 ---
+#--- 3. DB 핸들링 함수 ---
 def get_portfolio_from_db():
 if db is None: return []
 try:
@@ -47,7 +48,7 @@ def delete_from_portfolio(doc_id):
 if db:
 db.collection(COLLECTION_NAME).document(doc_id).delete()
 
---- 4. 데이터 수집 함수 ---
+#--- 4. 데이터 수집 함수 ---
 @st.cache_data(ttl=60)
 def get_finance_data(ticker):
 try:
@@ -82,7 +83,7 @@ def get_ticker_from_name(name):
 clean = name.strip().replace(" ", "")
 return COMPANY_TICKER_MAP.get(clean, clean.upper())
 
---- 5. UI 구성 ---
+#--- 5. UI 구성 ---
 st.title("📊 실시간 글로벌 경제 지표 대시보드")
 st.caption(f"최종 업데이트: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
